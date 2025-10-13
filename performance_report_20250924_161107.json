@@ -1,0 +1,783 @@
+{
+  "report_metadata": {
+    "generated_at": "2025-09-24T16:11:07.301834",
+    "report_period_days": 30,
+    "report_type": "comprehensive_performance_analysis",
+    "version": "1.0"
+  },
+  "executive_summary": {
+    "period": {
+      "days": 30,
+      "start_date": "2025-08-25T08:10:58.545756+00:00",
+      "end_date": "2025-09-24T08:10:58.545756+00:00"
+    },
+    "key_metrics": {
+      "total_issues": 158,
+      "resolved_issues": 0,
+      "pending_issues": 42,
+      "in_progress_issues": 45,
+      "resolution_rate": 0.0,
+      "average_resolution_time_days": 2.5,
+      "ai_processing_success_rate": 0.0
+    },
+    "trends": {
+      "issue_volume_change": 0,
+      "trend_direction": "stable"
+    },
+    "distributions": {
+      "by_category": {
+        "carpentry": 22,
+        "plumbing": 27,
+        "security": 22,
+        "hvac": 21,
+        "general": 20,
+        "maintenance": 15,
+        "electrical": 12,
+        "fire_safety": 19
+      },
+      "by_urgency": {
+        "low": 38,
+        "medium": 41,
+        "high": 41,
+        "critical": 38
+      }
+    },
+    "alerts": [
+      {
+        "type": "high_volume",
+        "severity": "warning",
+        "message": "High volume of issues detected: 158 in the current period",
+        "recommendation": "Consider increasing staff allocation or investigating root causes"
+      }
+    ],
+    "generated_at": "2025-09-24T16:11:02.540776"
+  },
+  "operational_metrics": {
+    "period_days": 7,
+    "operational_kpis": {
+      "response_time": {
+        "average_hours": 4.2,
+        "target_hours": 4.0,
+        "status": "slightly_behind"
+      },
+      "first_call_resolution": {
+        "rate": 78.5,
+        "target": 80.0,
+        "status": "needs_improvement"
+      },
+      "customer_satisfaction": {
+        "score": 4.2,
+        "target": 4.5,
+        "status": "good"
+      },
+      "preventive_maintenance": {
+        "completion_rate": 92.0,
+        "target": 95.0,
+        "status": "good"
+      }
+    },
+    "resource_utilization": {
+      "staff_utilization": {
+        "average_workload": 85.0,
+        "optimal_range": [
+          70,
+          90
+        ],
+        "status": "optimal"
+      },
+      "equipment_availability": {
+        "rate": 96.5,
+        "target": 98.0,
+        "status": "good"
+      },
+      "inventory_turnover": {
+        "rate": 12.0,
+        "target": 10.0,
+        "status": "excellent"
+      }
+    },
+    "daily_summary": {
+      "date": "2025-09-24",
+      "new_issues": 8,
+      "resolved_issues": 12,
+      "active_technicians": 6,
+      "scheduled_maintenance": 3,
+      "emergency_calls": 1,
+      "inventory_alerts": 2
+    },
+    "staff_performance_summary": {
+      "total_staff": 8,
+      "top_performer": {
+        "staff_id": "staff_1",
+        "assigned_tasks": 16,
+        "completed_tasks": 9,
+        "in_progress_tasks": 3,
+        "completion_rate": 56.25,
+        "average_completion_time_hours": -2135.44,
+        "performance_score": 78.75,
+        "specializations": {
+          "security": 3,
+          "plumbing": 3,
+          "electrical": 3,
+          "maintenance": 3,
+          "hvac": 3,
+          "carpentry": 1
+        }
+      },
+      "average_completion_rate": 29.12875
+    },
+    "equipment_alerts": [],
+    "generated_at": "2025-09-24T16:11:04.195179"
+  },
+  "predictive_maintenance": {
+    "maintenance_predictions": [],
+    "seasonal_insights": {
+      "current_season_risks": [
+        "Increased risk of water leaks and flooding",
+        "Electrical system vulnerabilities due to moisture",
+        "HVAC systems working harder due to humidity"
+      ],
+      "upcoming_season_preparation": [
+        "Conduct routine inspections",
+        "Plan preventive maintenance schedules",
+        "Review emergency procedures",
+        "Update equipment inventories"
+      ],
+      "weather_related_alerts": [
+        "Rainy season approaching - check drainage systems",
+        "Summer heat expected - AC maintenance recommended",
+        "Typhoon season - secure outdoor equipment"
+      ]
+    },
+    "cost_projections": {
+      "next_30_days": 0,
+      "next_90_days": 0,
+      "annual_projection": 0
+    },
+    "risk_assessment": {
+      "high_risk_count": 0,
+      "medium_risk_count": 0,
+      "overall_facility_risk": "Medium"
+    },
+    "generated_at": "2025-09-24T16:11:04.998019"
+  },
+  "detailed_analytics": {
+    "heat_map_analysis": {
+      "period_days": 30,
+      "total_issues": 158,
+      "heat_map_matrix": [
+        {
+          "location": "Rooftop",
+          "categories": {
+            "plumbing": 4,
+            "electrical": 0,
+            "HVAC": 0,
+            "carpentry": 4,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Lobby",
+          "categories": {
+            "plumbing": 2,
+            "electrical": 1,
+            "HVAC": 0,
+            "carpentry": 0,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Basement",
+          "categories": {
+            "plumbing": 4,
+            "electrical": 2,
+            "HVAC": 0,
+            "carpentry": 2,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Unit 102",
+          "categories": {
+            "plumbing": 3,
+            "electrical": 2,
+            "HVAC": 0,
+            "carpentry": 3,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Unit 201",
+          "categories": {
+            "plumbing": 3,
+            "electrical": 3,
+            "HVAC": 0,
+            "carpentry": 3,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "A-00028",
+          "categories": {
+            "plumbing": 0,
+            "electrical": 0,
+            "HVAC": 0,
+            "carpentry": 0,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Unit 101",
+          "categories": {
+            "plumbing": 3,
+            "electrical": 2,
+            "HVAC": 0,
+            "carpentry": 3,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Unit 00028, Kitchen",
+          "categories": {
+            "plumbing": 0,
+            "electrical": 0,
+            "HVAC": 0,
+            "carpentry": 1,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Unit 202",
+          "categories": {
+            "plumbing": 2,
+            "electrical": 0,
+            "HVAC": 0,
+            "carpentry": 2,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Elevator B",
+          "categories": {
+            "plumbing": 2,
+            "electrical": 1,
+            "HVAC": 0,
+            "carpentry": 1,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Elevator A",
+          "categories": {
+            "plumbing": 1,
+            "electrical": 0,
+            "HVAC": 0,
+            "carpentry": 2,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Unit 101 - Kitchen",
+          "categories": {
+            "plumbing": 1,
+            "electrical": 0,
+            "HVAC": 0,
+            "carpentry": 0,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Parking Garage",
+          "categories": {
+            "plumbing": 2,
+            "electrical": 1,
+            "HVAC": 0,
+            "carpentry": 1,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Unit 301 - Master Bedroom",
+          "categories": {
+            "plumbing": 0,
+            "electrical": 0,
+            "HVAC": 0,
+            "carpentry": 0,
+            "pest control": 0,
+            "masonry": 0
+          }
+        },
+        {
+          "location": "Building - Unit",
+          "categories": {
+            "plumbing": 0,
+            "electrical": 0,
+            "HVAC": 0,
+            "carpentry": 0,
+            "pest control": 0,
+            "masonry": 0
+          }
+        }
+      ],
+      "category_distribution": {
+        "carpentry": 22,
+        "plumbing": 27,
+        "security": 22,
+        "hvac": 21,
+        "general": 20,
+        "maintenance": 15,
+        "electrical": 12,
+        "fire_safety": 19
+      },
+      "urgency_distribution": {
+        "low": 38,
+        "medium": 41,
+        "high": 41,
+        "critical": 38
+      },
+      "top_hotspots": [
+        {
+          "location": "Basement",
+          "issue_count": 20
+        },
+        {
+          "location": "Unit 201",
+          "issue_count": 20
+        },
+        {
+          "location": "Unit 101",
+          "issue_count": 19
+        },
+        {
+          "location": "Elevator A",
+          "issue_count": 17
+        },
+        {
+          "location": "Unit 102",
+          "issue_count": 16
+        }
+      ],
+      "locations": [
+        "Rooftop",
+        "Lobby",
+        "Basement",
+        "Unit 102",
+        "Unit 201",
+        "A-00028",
+        "Unit 101",
+        "Unit 00028, Kitchen",
+        "Unit 202",
+        "Elevator B",
+        "Elevator A",
+        "Unit 101 - Kitchen",
+        "Parking Garage",
+        "Unit 301 - Master Bedroom",
+        "Building - Unit"
+      ],
+      "categories": [
+        "plumbing",
+        "electrical",
+        "HVAC",
+        "carpentry",
+        "pest control",
+        "masonry"
+      ],
+      "generated_at": "2025-09-24T16:11:05.844210"
+    },
+    "staff_performance": {
+      "period_days": 30,
+      "total_staff_analyzed": 9,
+      "staff_performance": [
+        {
+          "staff_id": "staff_1",
+          "assigned_tasks": 16,
+          "completed_tasks": 9,
+          "in_progress_tasks": 3,
+          "completion_rate": 56.25,
+          "average_completion_time_hours": -2135.44,
+          "performance_score": 78.75,
+          "specializations": {
+            "security": 3,
+            "plumbing": 3,
+            "electrical": 3,
+            "maintenance": 3,
+            "hvac": 3,
+            "carpentry": 1
+          }
+        },
+        {
+          "staff_id": "staff_3",
+          "assigned_tasks": 9,
+          "completed_tasks": 5,
+          "in_progress_tasks": 1,
+          "completion_rate": 55.56,
+          "average_completion_time_hours": -1963.0,
+          "performance_score": 77.78,
+          "specializations": {
+            "electrical": 2,
+            "fire_safety": 1,
+            "hvac": 1,
+            "general": 3,
+            "maintenance": 2
+          }
+        },
+        {
+          "staff_id": "staff_5",
+          "assigned_tasks": 13,
+          "completed_tasks": 4,
+          "in_progress_tasks": 4,
+          "completion_rate": 30.77,
+          "average_completion_time_hours": -2054.25,
+          "performance_score": 43.08,
+          "specializations": {
+            "electrical": 2,
+            "plumbing": 1,
+            "security": 3,
+            "hvac": 2,
+            "maintenance": 3,
+            "fire_safety": 2
+          }
+        },
+        {
+          "staff_id": "staff_7",
+          "assigned_tasks": 11,
+          "completed_tasks": 3,
+          "in_progress_tasks": 1,
+          "completion_rate": 27.27,
+          "average_completion_time_hours": -1500.67,
+          "performance_score": 38.18,
+          "specializations": {
+            "carpentry": 2,
+            "maintenance": 1,
+            "plumbing": 2,
+            "fire_safety": 1,
+            "general": 2,
+            "electrical": 2,
+            "security": 1
+          }
+        },
+        {
+          "staff_id": "staff_2",
+          "assigned_tasks": 10,
+          "completed_tasks": 2,
+          "in_progress_tasks": 4,
+          "completion_rate": 20.0,
+          "average_completion_time_hours": -1252.5,
+          "performance_score": 28.0,
+          "specializations": {
+            "fire_safety": 2,
+            "maintenance": 3,
+            "security": 2,
+            "general": 1,
+            "carpentry": 1,
+            "electrical": 1
+          }
+        },
+        {
+          "staff_id": "staff_4",
+          "assigned_tasks": 11,
+          "completed_tasks": 2,
+          "in_progress_tasks": 3,
+          "completion_rate": 18.18,
+          "average_completion_time_hours": -2491.5,
+          "performance_score": 25.45,
+          "specializations": {
+            "security": 2,
+            "electrical": 2,
+            "hvac": 1,
+            "general": 2,
+            "maintenance": 2,
+            "plumbing": 1,
+            "carpentry": 1
+          }
+        },
+        {
+          "staff_id": "staff_6",
+          "assigned_tasks": 20,
+          "completed_tasks": 3,
+          "in_progress_tasks": 6,
+          "completion_rate": 15.0,
+          "average_completion_time_hours": -1949.0,
+          "performance_score": 21.0,
+          "specializations": {
+            "security": 5,
+            "electrical": 3,
+            "hvac": 2,
+            "general": 4,
+            "plumbing": 1,
+            "fire_safety": 1,
+            "maintenance": 3,
+            "carpentry": 1
+          }
+        },
+        {
+          "staff_id": "staff_8",
+          "assigned_tasks": 10,
+          "completed_tasks": 1,
+          "in_progress_tasks": 3,
+          "completion_rate": 10.0,
+          "average_completion_time_hours": -2096.0,
+          "performance_score": 14.0,
+          "specializations": {
+            "fire_safety": 2,
+            "plumbing": 2,
+            "security": 1,
+            "maintenance": 2,
+            "hvac": 2,
+            "electrical": 1
+          }
+        },
+        {
+          "staff_id": "maintenance@facilityfix.test",
+          "assigned_tasks": 1,
+          "completed_tasks": 0,
+          "in_progress_tasks": 1,
+          "completion_rate": 0.0,
+          "average_completion_time_hours": 0,
+          "performance_score": 0.0,
+          "specializations": {
+            "plumbing": 1
+          }
+        }
+      ],
+      "top_performers": [
+        {
+          "staff_id": "staff_1",
+          "assigned_tasks": 16,
+          "completed_tasks": 9,
+          "in_progress_tasks": 3,
+          "completion_rate": 56.25,
+          "average_completion_time_hours": -2135.44,
+          "performance_score": 78.75,
+          "specializations": {
+            "security": 3,
+            "plumbing": 3,
+            "electrical": 3,
+            "maintenance": 3,
+            "hvac": 3,
+            "carpentry": 1
+          }
+        },
+        {
+          "staff_id": "staff_3",
+          "assigned_tasks": 9,
+          "completed_tasks": 5,
+          "in_progress_tasks": 1,
+          "completion_rate": 55.56,
+          "average_completion_time_hours": -1963.0,
+          "performance_score": 77.78,
+          "specializations": {
+            "electrical": 2,
+            "fire_safety": 1,
+            "hvac": 1,
+            "general": 3,
+            "maintenance": 2
+          }
+        },
+        {
+          "staff_id": "staff_5",
+          "assigned_tasks": 13,
+          "completed_tasks": 4,
+          "in_progress_tasks": 4,
+          "completion_rate": 30.77,
+          "average_completion_time_hours": -2054.25,
+          "performance_score": 43.08,
+          "specializations": {
+            "electrical": 2,
+            "plumbing": 1,
+            "security": 3,
+            "hvac": 2,
+            "maintenance": 3,
+            "fire_safety": 2
+          }
+        }
+      ],
+      "performance_insights": {
+        "average_completion_rate": 25.892222222222223,
+        "average_completion_time": NaN,
+        "total_tasks_completed": 29,
+        "total_tasks_assigned": 101
+      },
+      "generated_at": "2025-09-24T16:11:06.176731"
+    },
+    "equipment_insights": {
+      "period_days": 90,
+      "equipment_analysis": [
+        {
+          "equipment_type": "Elevator",
+          "failure_count": 4,
+          "failure_frequency_per_month": 1.33,
+          "most_common_category": "general",
+          "most_problematic_location": "A-00028",
+          "risk_level": "Low",
+          "high_urgency_ratio": 0.0,
+          "predicted_next_maintenance": "2025-09-19T10:39:36.828716+00:00",
+          "category_breakdown": {
+            "general": 4
+          },
+          "location_breakdown": {
+            "A-00028": 4
+          }
+        },
+        {
+          "equipment_type": "Plumbing",
+          "failure_count": 2,
+          "failure_frequency_per_month": 0.67,
+          "most_common_category": "plumbing",
+          "most_problematic_location": "Unit 101 - Kitchen",
+          "risk_level": "Low",
+          "high_urgency_ratio": 0.0,
+          "predicted_next_maintenance": "2025-09-20T18:24:18.943620+00:00",
+          "category_breakdown": {
+            "plumbing": 1,
+            "general": 1
+          },
+          "location_breakdown": {
+            "Unit 101 - Kitchen": 1,
+            "Building - Unit": 1
+          }
+        },
+        {
+          "equipment_type": "AC",
+          "failure_count": 1,
+          "failure_frequency_per_month": 0.33,
+          "most_common_category": "hvac",
+          "most_problematic_location": "Unit 301 - Master Bedroom",
+          "risk_level": "Low",
+          "high_urgency_ratio": 0.0,
+          "predicted_next_maintenance": "2025-10-24T16:11:06.821635",
+          "category_breakdown": {
+            "hvac": 1
+          },
+          "location_breakdown": {
+            "Unit 301 - Master Bedroom": 1
+          }
+        }
+      ],
+      "high_risk_equipment": [],
+      "maintenance_recommendations": [
+        {
+          "equipment": "Elevator",
+          "recommendation": "Schedule preventive maintenance - 1.3 failures/month",
+          "priority": "Low",
+          "next_maintenance": "2025-09-19T10:39:36.828716+00:00"
+        },
+        {
+          "equipment": "Plumbing",
+          "recommendation": "Schedule preventive maintenance - 0.7 failures/month",
+          "priority": "Low",
+          "next_maintenance": "2025-09-20T18:24:18.943620+00:00"
+        },
+        {
+          "equipment": "AC",
+          "recommendation": "Schedule preventive maintenance - 0.3 failures/month",
+          "priority": "Low",
+          "next_maintenance": "2025-10-24T16:11:06.821635"
+        }
+      ],
+      "total_equipment_issues": 7,
+      "generated_at": "2025-09-24T16:11:06.821683"
+    },
+    "inventory_analysis": {
+      "period_days": 60,
+      "inventory_analysis": [
+        {
+          "repair_category": "plumbing",
+          "repair_count": 18,
+          "common_parts": [
+            "pipes",
+            "fittings",
+            "sealants",
+            "valves"
+          ],
+          "average_cost_per_repair": 150.0,
+          "projected_total_cost": 2700.0,
+          "usage_frequency": "high",
+          "reorder_priority": "High"
+        },
+        {
+          "repair_category": "carpentry",
+          "repair_count": 13,
+          "common_parts": [
+            "wood",
+            "screws",
+            "hinges",
+            "handles"
+          ],
+          "average_cost_per_repair": 80.0,
+          "projected_total_cost": 1040.0,
+          "usage_frequency": "low",
+          "reorder_priority": "Medium"
+        },
+        {
+          "repair_category": "electrical",
+          "repair_count": 8,
+          "common_parts": [
+            "wires",
+            "outlets",
+            "switches",
+            "breakers"
+          ],
+          "average_cost_per_repair": 120.0,
+          "projected_total_cost": 960.0,
+          "usage_frequency": "medium",
+          "reorder_priority": "Medium"
+        }
+      ],
+      "total_projected_cost": 4700.0,
+      "high_priority_reorders": [
+        {
+          "repair_category": "plumbing",
+          "repair_count": 18,
+          "common_parts": [
+            "pipes",
+            "fittings",
+            "sealants",
+            "valves"
+          ],
+          "average_cost_per_repair": 150.0,
+          "projected_total_cost": 2700.0,
+          "usage_frequency": "high",
+          "reorder_priority": "High"
+        }
+      ],
+      "cost_breakdown": {
+        "fire_safety": 0,
+        "hvac": 0,
+        "electrical": 960.0,
+        "general": 0,
+        "maintenance": 0,
+        "plumbing": 2700.0,
+        "carpentry": 1040.0,
+        "security": 0
+      },
+      "recommendations": [
+        "Stock up on plumbing supplies - 18 recent repairs",
+        "Stock up on carpentry supplies - 13 recent repairs",
+        "Stock up on electrical supplies - 8 recent repairs"
+      ],
+      "generated_at": "2025-09-24T16:11:07.301698"
+    }
+  },
+  "recommendations": [
+    {
+      "category": "Performance",
+      "priority": "High",
+      "recommendation": "Resolution rate is 0.0% - implement process improvements to reach 85%+ target",
+      "expected_impact": "Improved tenant satisfaction and operational efficiency"
+    }
+  ]
+}

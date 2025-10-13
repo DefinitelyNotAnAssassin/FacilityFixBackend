@@ -1,0 +1,326 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    
+    // Helper functions for authentication and authorization
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserRole() {
+      return request.auth.token.role;
+    }
+    
+    function getUserId() {
+      return request.auth.uid;
+    }
+    
+    function getBuildingId() {
+      return request.auth.token.building_id;
+    }
+    
+    function getUnitId() {
+      return request.auth.token.unit_id;
+    }
+    
+    function getDepartment() {
+      return request.auth.token.department;
+    }
+    
+    function getUserStatus() {
+      return request.auth.token.status;
+    }
+    
+    // Role checking functions
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+    
+    function isStaff() {
+      return isAuthenticated() && getUserRole() == 'staff';
+    }
+    
+    function isTenant() {
+      return isAuthenticated() && getUserRole() == 'tenant';
+    }
+    
+    function isStaffOrAdmin() {
+      return isAdmin() || isStaff();
+    }
+    
+    function isActiveUser() {
+      return isAuthenticated() && getUserStatus() == 'active';
+    }
+    
+    // Building access control
+    function hasAccessToBuilding(buildingId) {
+      return isAdmin() || getBuildingId() == buildingId;
+    }
+    
+    // Unit access control
+    function hasAccessToUnit(unitId) {
+      return isAdmin() || (isTenant() && getUnitId() == unitId);
+    }
+    
+    // Department access control
+    function hasAccessToDepartment(dept) {
+      return isAdmin() || (isStaff() && getDepartment() == dept);
+    }
+    
+    // Resource ownership check
+    function isResourceOwner(resourceUserId) {
+      return getUserId() == resourceUserId;
+    }
+    
+    // BUILDINGS COLLECTION
+    match /buildings/{buildingId} {
+      allow read: if isActiveUser() && hasAccessToBuilding(buildingId);
+      allow write: if isAdmin();
+    }
+    
+    // UNITS COLLECTION
+    match /units/{unitId} {
+      allow read: if isActiveUser() && (
+        isAdmin() || 
+        hasAccessToBuilding(resource.data.building_id) ||
+        hasAccessToUnit(unitId)
+      );
+      allow write: if isAdmin();
+    }
+    
+    // USERS COLLECTION (Firebase Auth users)
+    match /users/{userId} {
+      allow read: if isActiveUser() && (
+        isAdmin() || 
+        isResourceOwner(userId)
+      );
+      allow write: if isAdmin();
+    }
+    
+    // USER PROFILES COLLECTION
+    match /user_profiles/{userId} {
+      allow read: if isActiveUser() && (
+        isAdmin() || 
+        isResourceOwner(userId) ||
+        (isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id))
+      );
+      allow write: if isAdmin() || (isResourceOwner(userId) && isActiveUser());
+    }
+    
+    // EQUIPMENT COLLECTION
+    match /equipment/{equipmentId} {
+      allow read: if isActiveUser() && hasAccessToBuilding(resource.data.building_id);
+      allow write: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+    }
+    
+    // INVENTORY COLLECTION
+    match /inventory/{inventoryId} {
+      allow read: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+      allow write: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+    }
+    
+    // INVENTORY TRANSACTIONS
+    match /inventory_transactions/{transactionId} {
+      allow read: if isStaffOrAdmin();
+      allow create: if isStaffOrAdmin() && isResourceOwner(request.resource.data.performed_by);
+      allow update, delete: if isAdmin();
+    }
+    
+    // INVENTORY REQUESTS
+    match /inventory_requests/{requestId} {
+      allow read: if isStaffOrAdmin() && (
+        isResourceOwner(resource.data.requested_by) ||
+        isAdmin()
+      );
+      allow create: if isStaff() && isResourceOwner(request.resource.data.requested_by);
+      allow update: if isAdmin() || (isStaff() && isResourceOwner(resource.data.requested_by));
+      allow delete: if isAdmin();
+    }
+    
+    // LOW STOCK ALERTS
+    match /low_stock_alerts/{alertId} {
+      allow read: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+      allow write: if isAdmin();
+    }
+    
+    // INVENTORY USAGE ANALYTICS
+    match /inventory_usage_analytics/{analyticsId} {
+      allow read: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+      allow write: if isAdmin();
+    }
+    
+    // CONCERN SLIPS COLLECTION
+    match /concern_slips/{concernId} {
+      allow read: if isActiveUser() && (
+        isAdmin() ||
+        isResourceOwner(resource.data.reported_by) ||
+        (isStaff() && hasAccessToBuilding(resource.data.unit_id))
+      );
+      allow create: if isTenant() && isResourceOwner(request.resource.data.reported_by);
+      allow update: if isAdmin() || (
+        isTenant() && 
+        isResourceOwner(resource.data.reported_by) && 
+        resource.data.status == 'pending'
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // JOB SERVICES COLLECTION
+    match /job_services/{jobId} {
+      allow read: if isStaffOrAdmin();
+      allow create: if isAdmin();
+      allow update: if isStaffOrAdmin() && (
+        isAdmin() || 
+        isResourceOwner(resource.data.assigned_to)
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // JOB SERVICE REQUESTS COLLECTION (Standalone job service requests from tenants)
+    match /job_service_requests/{requestId} {
+      allow read: if isActiveUser() && (
+        isAdmin() ||
+        isStaff() ||
+        isResourceOwner(resource.data.reported_by)
+      );
+      allow create: if isTenant() && isResourceOwner(request.resource.data.reported_by);
+      allow update: if isAdmin() || isStaff() || (
+        isTenant() && 
+        isResourceOwner(resource.data.reported_by) && 
+        resource.data.status == 'pending'
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // WORK ORDER PERMITS COLLECTION
+    match /work_order_permits/{permitId} {
+      allow read: if isActiveUser() && (
+        isAdmin() ||
+        isResourceOwner(resource.data.requested_by)
+      );
+      allow create: if isTenant() && isResourceOwner(request.resource.data.requested_by);
+      allow update: if isAdmin() || (
+        isTenant() && 
+        isResourceOwner(resource.data.requested_by) && 
+        resource.data.status == 'pending'
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // MAINTENANCE TASKS COLLECTION
+    match /maintenance_tasks/{taskId} {
+      allow read: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+      allow create: if isStaffOrAdmin() && hasAccessToBuilding(request.resource.data.building_id);
+      allow update: if isStaffOrAdmin() && (
+        isAdmin() || 
+        isResourceOwner(resource.data.assigned_to)
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // MAINTENANCE SCHEDULES
+    match /maintenance_schedules/{scheduleId} {
+      allow read: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+      allow write: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+    }
+    
+    // EQUIPMENT USAGE LOGS
+    match /equipment_usage_logs/{logId} {
+      allow read: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+      allow create: if isStaffOrAdmin() && hasAccessToBuilding(request.resource.data.building_id);
+      allow update, delete: if isAdmin();
+    }
+    
+    // MAINTENANCE TEMPLATES
+    match /maintenance_templates/{templateId} {
+      allow read: if isStaffOrAdmin();
+      allow write: if isAdmin();
+    }
+    
+    // MAINTENANCE REPORTS
+    match /maintenance_reports/{reportId} {
+      allow read: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+      allow write: if isAdmin();
+    }
+    
+    // ANNOUNCEMENTS COLLECTION
+    match /announcements/{announcementId} {
+      allow read: if isActiveUser() && hasAccessToBuilding(resource.data.building_id);
+      allow write: if isStaffOrAdmin() && hasAccessToBuilding(resource.data.building_id);
+    }
+    
+    // NOTIFICATIONS COLLECTION
+    match /notifications/{notificationId} {
+      allow read: if isActiveUser() && isResourceOwner(resource.data.recipient_id);
+      allow create: if isStaffOrAdmin();
+      allow update: if isResourceOwner(resource.data.recipient_id);
+      allow delete: if isAdmin() || isResourceOwner(resource.data.recipient_id);
+    }
+    
+    // STATUS HISTORY COLLECTION
+    match /status_history/{historyId} {
+      allow read: if isStaffOrAdmin();
+      allow create: if isStaffOrAdmin();
+      allow update, delete: if isAdmin();
+    }
+    
+    // FEEDBACK COLLECTION
+    match /feedback/{feedbackId} {
+      allow read: if isActiveUser() && (
+        isAdmin() ||
+        isResourceOwner(resource.data.submitted_by)
+      );
+      allow create: if isTenant() && isResourceOwner(request.resource.data.submitted_by);
+      allow update: if isTenant() && isResourceOwner(resource.data.submitted_by);
+      allow delete: if isAdmin();
+    }
+    
+    // USER FCM TOKENS COLLECTION
+    match /user_fcm_tokens/{tokenId} {
+      allow read, write: if isActiveUser() && isResourceOwner(resource.data.user_id);
+    }
+    
+    // FILE ATTACHMENTS COLLECTION
+    match /file_attachments/{attachmentId} {
+      allow read: if isActiveUser() && (
+        isAdmin() ||
+        isResourceOwner(resource.data.uploaded_by) ||
+        (isStaffOrAdmin() && resource.data.entity_type in ['concern_slips', 'job_services', 'maintenance_tasks'])
+      );
+      allow create: if isActiveUser() && isResourceOwner(request.resource.data.uploaded_by);
+      allow update: if isAdmin() || isResourceOwner(resource.data.uploaded_by);
+      allow delete: if isAdmin();
+    }
+    
+    // CHAT ROOMS COLLECTION
+    match /rooms/{roomId} {
+      allow read, write: if isActiveUser() && (
+        isAdmin() || 
+        getUserId() in resource.data.participants || 
+        getUserId() in request.resource.data.participants
+      );
+      allow create: if true; // Anyone can create conversations/rooms
+      
+      // CHAT MESSAGES SUBCOLLECTION
+      match /messages/{messageId} {
+        allow read, write: if isActiveUser() && (
+          isAdmin() ||
+          getUserId() in get(/databases/$(database)/documents/rooms/$(roomId)).data.participants
+        );
+        allow create: if true; // Anyone can create messages (room participation will be checked on read)
+      }
+    }
+    
+    // CONNECTION TEST COLLECTION (for Firebase connection testing)
+    match /_health_check/{testId} {
+      allow read, write: if isActiveUser();
+    }
+    
+    // GENERAL CONNECTION TEST COLLECTION (fallback)
+    match /_connection_test/{testId} {
+      allow read: if true; // Allow read for connection testing
+    }
+  }
+}

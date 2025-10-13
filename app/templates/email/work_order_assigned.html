@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}Work Order Assigned - FacilityFix{% endblock %}
+
+{% block header_subtitle %}Work Order Assignment{% endblock %}
+
+{% block content %}
+<div class="notification-type info">Work Order Assigned</div>
+
+<h2>Hello {{ work_order.recipient_name }},</h2>
+
+<p>You have been assigned a new work order that requires your attention.</p>
+
+<div class="details-box">
+    <h3>Assignment Details</h3>
+    <p><strong>Work Order ID:</strong> #{{ work_order.id }}</p>
+    <p><strong>Title:</strong> {{ work_order.title }}</p>
+    <p><strong>Description:</strong> {{ work_order.description }}</p>
+    <p><strong>Location:</strong> {{ work_order.location }}</p>
+    <p><strong>Category:</strong> {{ work_order.category }}</p>
+    <p><strong>Priority:</strong> 
+        <span class="priority-{{ work_order.priority }}">{{ work_order.priority|upper }}</span>
+    </p>
+    {% if work_order.scheduled_date %}
+    <p><strong>Scheduled Date:</strong> {{ work_order.scheduled_date }}</p>
+    {% endif %}
+    {% if work_order.estimated_hours %}
+    <p><strong>Estimated Duration:</strong> {{ work_order.estimated_hours }} hours</p>
+    {% endif %}
+</div>
+
+{% if work_order.materials_used %}
+<div class="details-box">
+    <h3>Required Materials</h3>
+    <ul>
+    {% for material in work_order.materials_used %}
+        <li>{{ material }}</li>
+    {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<p>Please acknowledge this assignment and update the work order status as you progress.</p>
+
+<a href="#" class="action-button">View Assignment</a>
+
+<p>If you have any questions or need additional resources, please contact your supervisor.</p>
+
+<p>Best regards,<br>
+FacilityFix Team</p>
+{% endblock %}

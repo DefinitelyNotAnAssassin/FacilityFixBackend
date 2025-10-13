@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}{{ announcement.title }} - FacilityFix{% endblock %}
+
+{% block header_subtitle %}{{ announcement.type|title }} Announcement{% endblock %}
+
+{% block content %}
+<div class="notification-type {% if announcement.type == 'emergency' %}error{% elif announcement.type == 'maintenance' %}warning{% else %}info{% endif %}">
+    {{ announcement.type|title }} Announcement
+</div>
+
+<h2>{{ announcement.title }}</h2>
+
+<div class="details-box">
+    <h3>Announcement Details</h3>
+    <p><strong>Type:</strong> {{ announcement.type|title }}</p>
+    <p><strong>Audience:</strong> 
+        {% if announcement.audience == 'all' %}All Building Residents & Staff
+        {% elif announcement.audience == 'tenants' %}Tenants & Unit Owners
+        {% elif announcement.audience == 'staff' %}Maintenance Staff
+        {% elif announcement.audience == 'admins' %}Building Administrators
+        {% else %}{{ announcement.audience|title }}
+        {% endif %}
+    </p>
+    {% if announcement.location_affected %}
+    <p><strong>Location Affected:</strong> {{ announcement.location_affected }}</p>
+    {% endif %}
+    <p><strong>Posted:</strong> {{ announcement.date_added.strftime('%B %d, %Y at %I:%M %p') if announcement.date_added else 'Recently' }}</p>
+</div>
+
+<div class="details-box">
+    <h3>Message</h3>
+    <div style="white-space: pre-line; line-height: 1.6;">{{ announcement.content }}</div>
+</div>
+
+{% if announcement.type == 'maintenance' %}
+<div class="details-box" style="background-color: #fff3e0; border-left-color: #f57c00;">
+    <h3>🔧 Maintenance Notice</h3>
+    <p>This maintenance activity may affect normal building operations. Please plan accordingly and contact building management if you have any concerns.</p>
+</div>
+{% elif announcement.type == 'emergency' %}
+<div class="details-box" style="background-color: #ffebee; border-left-color: #d32f2f;">
+    <h3>🚨 Emergency Alert</h3>
+    <p><strong>This is an important emergency notification.</strong> Please read carefully and take any necessary actions immediately.</p>
+</div>
+{% elif announcement.type == 'event' %}
+<div class="details-box" style="background-color: #e8f5e8; border-left-color: #2e7d2e;">
+    <h3>📅 Event Information</h3>
+    <p>Mark your calendar and plan to participate in this building event or activity.</p>
+</div>
+{% elif announcement.type == 'policy' %}
+<div class="details-box" style="background-color: #e3f2fd; border-left-color: #1976d2;">
+    <h3>📋 Policy Update</h3>
+    <p>Please review this policy information carefully. These updates may affect building rules and procedures.</p>
+</div>
+{% endif %}
+
+<p>If you have any questions about this announcement, please contact your building management team.</p>
+
+<div style="margin: 30px 0; padding: 20px; background-color: #f8f9fa; border-radius: 6px; border: 1px solid #dee2e6;">
+    <h4 style="margin-top: 0; color: #495057;">📱 Stay Connected</h4>
+    <p style="margin-bottom: 0; color: #6c757d; font-size: 14px;">
+        You received this announcement because you are registered in the FacilityFix system for this building. 
+        For real-time updates, make sure to enable notifications in the FacilityFix mobile app.
+    </p>
+</div>
+
+<p>Best regards,<br>
+<strong>Building Management Team</strong><br>
+FacilityFix System</p>
+{% endblock %}

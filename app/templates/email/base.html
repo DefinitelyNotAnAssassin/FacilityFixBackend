@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}FacilityFix Notification{% endblock %}</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 300;
+        }
+        .content {
+            padding: 30px;
+        }
+        .notification-type {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 20px;
+        }
+        .info { background-color: #e3f2fd; color: #1976d2; }
+        .success { background-color: #e8f5e8; color: #2e7d2e; }
+        .warning { background-color: #fff3e0; color: #f57c00; }
+        .error { background-color: #ffebee; color: #d32f2f; }
+        .priority-high { background-color: #ffebee; color: #d32f2f; }
+        .priority-critical { background-color: #ffebee; color: #d32f2f; }
+        .priority-medium { background-color: #fff3e0; color: #f57c00; }
+        .priority-low { background-color: #e8f5e8; color: #2e7d2e; }
+        .details-box {
+            background-color: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .details-box h3 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        .action-button {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .action-button:hover {
+            background-color: #5a6fd8;
+        }
+        .footer {
+            background-color: #f8f9fa;
+            padding: 20px;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+        }
+        .timestamp {
+            color: #888;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+        @media (max-width: 600px) {
+            .container {
+                margin: 0;
+                border-radius: 0;
+            }
+            .content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏢 FacilityFix</h1>
+            <p>{% block header_subtitle %}Smart Maintenance Management{% endblock %}</p>
+        </div>
+        
+        <div class="content">
+            {% block content %}{% endblock %}
+            
+            <div class="timestamp">
+                <p>Sent on: {{ timestamp.strftime('%B %d, %Y at %I:%M %p UTC') }}</p>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>&copy; 2024 FacilityFix. All rights reserved.</p>
+            <p>This is an automated notification. Please do not reply to this email.</p>
+        </div>
+    </div>
+</body>
+</html>

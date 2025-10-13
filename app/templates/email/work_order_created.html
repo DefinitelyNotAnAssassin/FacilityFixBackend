@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}New Work Order Created - FacilityFix{% endblock %}
+
+{% block header_subtitle %}New Work Order Created{% endblock %}
+
+{% block content %}
+<div class="notification-type info">Work Order Created</div>
+
+<h2>Hello {{ work_order.recipient_name }},</h2>
+
+<p>A new work order has been created and requires your attention.</p>
+
+<div class="details-box">
+    <h3>Work Order Details</h3>
+    <p><strong>Title:</strong> {{ work_order.title }}</p>
+    <p><strong>Description:</strong> {{ work_order.description }}</p>
+    <p><strong>Location:</strong> {{ work_order.location }}</p>
+    <p><strong>Category:</strong> {{ work_order.category }}</p>
+    <p><strong>Priority:</strong> 
+        <span class="priority-{{ work_order.priority }}">{{ work_order.priority|upper }}</span>
+    </p>
+    {% if work_order.scheduled_date %}
+    <p><strong>Scheduled Date:</strong> {{ work_order.scheduled_date }}</p>
+    {% endif %}
+    {% if work_order.assigned_to_name %}
+    <p><strong>Assigned To:</strong> {{ work_order.assigned_to_name }}</p>
+    {% endif %}
+</div>
+
+{% if work_order.concern_slip_id %}
+<p>This work order was created from concern slip #{{ work_order.concern_slip_id }}.</p>
+{% endif %}
+
+<p>Please review the work order and take appropriate action through the FacilityFix application.</p>
+
+<a href="#" class="action-button">View Work Order</a>
+
+<p>If you have any questions, please contact your building administrator.</p>
+
+<p>Best regards,<br>
+FacilityFix Team</p>
+{% endblock %}

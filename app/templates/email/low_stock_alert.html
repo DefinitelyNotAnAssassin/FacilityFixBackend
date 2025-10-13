@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Low Stock Alert - FacilityFix{% endblock %}
+
+{% block header_subtitle %}Inventory Alert{% endblock %}
+
+{% block content %}
+<div class="notification-type warning">Low Stock Alert</div>
+
+<h2>Hello {{ inventory.recipient_name }},</h2>
+
+<p>This is an automated alert to notify you that inventory levels are running low for the following item:</p>
+
+<div class="details-box">
+    <h3>Inventory Alert Details</h3>
+    <p><strong>Item Name:</strong> {{ inventory.item_name }}</p>
+    {% if inventory.item_code %}
+    <p><strong>Item Code:</strong> {{ inventory.item_code }}</p>
+    {% endif %}
+    <p><strong>Current Stock:</strong> {{ inventory.current_stock }} {{ inventory.unit_of_measure }}</p>
+    <p><strong>Reorder Level:</strong> {{ inventory.reorder_level }} {{ inventory.unit_of_measure }}</p>
+    <p><strong>Alert Level:</strong> 
+        <span class="priority-{{ inventory.alert_level }}">{{ inventory.alert_level|upper }}</span>
+    </p>
+    <p><strong>Department:</strong> {{ inventory.department }}</p>
+    {% if inventory.storage_location %}
+    <p><strong>Storage Location:</strong> {{ inventory.storage_location }}</p>
+    {% endif %}
+</div>
+
+{% if inventory.supplier_name %}
+<div class="details-box">
+    <h3>Supplier Information</h3>
+    <p><strong>Supplier:</strong> {{ inventory.supplier_name }}</p>
+    {% if inventory.supplier_contact %}
+    <p><strong>Contact:</strong> {{ inventory.supplier_contact }}</p>
+    {% endif %}
+</div>
+{% endif %}
+
+<p><strong>Action Required:</strong> Please consider placing a reorder for this item to maintain adequate stock levels.</p>
+
+{% if inventory.alert_level == 'critical' or inventory.alert_level == 'out_of_stock' %}
+<p style="color: #d32f2f; font-weight: bold;">⚠️ This is a critical alert. Immediate action may be required.</p>
+{% endif %}
+
+<a href="#" class="action-button">Manage Inventory</a>
+
+<p>This alert was generated automatically based on your configured reorder levels.</p>
+
+<p>Best regards,<br>
+FacilityFix Team</p>
+{% endblock %}

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}Maintenance Scheduled - FacilityFix{% endblock %}
+
+{% block header_subtitle %}Preventive Maintenance Scheduled{% endblock %}
+
+{% block content %}
+<div class="notification-type info">Maintenance Scheduled</div>
+
+<h2>Hello {{ maintenance.recipient_name }},</h2>
+
+<p>A preventive maintenance task has been scheduled for your attention.</p>
+
+<div class="details-box">
+    <h3>Maintenance Details</h3>
+    <p><strong>Task:</strong> {{ maintenance.task_title }}</p>
+    <p><strong>Equipment:</strong> {{ maintenance.equipment_name }}</p>
+    <p><strong>Location:</strong> {{ maintenance.location }}</p>
+    <p><strong>Priority:</strong> 
+        <span class="priority-{{ maintenance.priority }}">{{ maintenance.priority|upper }}</span>
+    </p>
+    {% if maintenance.scheduled_date %}
+    <p><strong>Scheduled Date:</strong> {{ maintenance.scheduled_date }}</p>
+    {% endif %}
+    {% if maintenance.estimated_duration %}
+    <p><strong>Estimated Duration:</strong> {{ maintenance.estimated_duration }} minutes</p>
+    {% endif %}
+</div>
+
+{% if maintenance.task_description %}
+<div class="details-box">
+    <h3>Task Description</h3>
+    <p>{{ maintenance.task_description }}</p>
+</div>
+{% endif %}
+
+{% if maintenance.required_parts %}
+<div class="details-box">
+    <h3>Required Parts/Materials</h3>
+    <ul>
+    {% for part in maintenance.required_parts %}
+        <li>{{ part }}</li>
+    {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<p>Please prepare for this maintenance task and ensure you have all necessary tools and materials.</p>
+
+<a href="#" class="action-button">View Maintenance Task</a>
+
+<p>If you need to reschedule or have any questions, please contact your supervisor immediately.</p>
+
+<p>Best regards,<br>
+FacilityFix Team</p>
+{% endblock %}
