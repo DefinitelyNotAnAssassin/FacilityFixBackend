@@ -334,3 +334,142 @@ async def delete_maintenance_task(
     except Exception as exc:  # pragma: no cover
         logger.error("Unexpected error deleting maintenance task %s: %s", task_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to delete maintenance task: {exc}")
+
+
+class ChecklistItemUpdate(BaseModel):
+    """Model for updating a single checklist item."""
+    item_id: str
+    completed: bool
+    task: Optional[str] = None
+
+
+class ChecklistUpdate(BaseModel):
+    """Model for updating the entire checklist."""
+    checklist_completed: List[Dict[str, Any]]
+
+
+@router.patch("/{task_id}/checklist")
+async def update_maintenance_checklist(
+    task_id: str,
+    checklist_data: ChecklistUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Update the checklist for a maintenance task.
+    
+    The checklist should be an array of objects with the following structure:
+    [
+        {
+            "id": "unique_item_id",
+            "task": "Task description",
+            "completed": true/false
+        }
+    ]
+    """
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Validate checklist structure
+        for item in checklist_data.checklist_completed:
+            if "id" not in item or "task" not in item or "completed" not in item:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each checklist item must have 'id', 'task', and 'completed' fields"
+                )
+            if not isinstance(item["completed"], bool):
+                raise HTTPException(
+                    status_code=400,
+                    detail="'completed' field must be a boolean"
+                )
+
+        # Update the task with the new checklist
+        updated_task = await maintenance_task_service.update_task(
+            task_id,
+            {"checklist_completed": checklist_data.checklist_completed}
+        )
+
+        if not updated_task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        return {
+            "success": True,
+            "message": "Checklist updated successfully",
+            "task": _serialize_task(updated_task),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error updating checklist for task %s: %s", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error updating checklist for task %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to update checklist: {exc}")
+
+
+@router.patch("/{task_id}/checklist/{item_id}")
+async def update_checklist_item(
+    task_id: str,
+    item_id: str,
+    item_update: ChecklistItemUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Update a single checklist item's completion status.
+    
+    This is useful for toggling individual checklist items without sending the entire list.
+    """
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Get current task
+        task = await maintenance_task_service.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        # Get current checklist
+        current_checklist = task.checklist_completed or []
+        
+        # Find and update the specific item
+        item_found = False
+        updated_checklist = []
+        for item in current_checklist:
+            if item.get("id") == item_id:
+                item_found = True
+                updated_item = {
+                    "id": item_id,
+                    "task": item_update.task if item_update.task is not None else item.get("task", ""),
+                    "completed": item_update.completed
+                }
+                updated_checklist.append(updated_item)
+            else:
+                updated_checklist.append(item)
+
+        if not item_found:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Checklist item with id '{item_id}' not found"
+            )
+
+        # Update the task
+        updated_task = await maintenance_task_service.update_task(
+            task_id,
+            {"checklist_completed": updated_checklist}
+        )
+
+        return {
+            "success": True,
+            "message": "Checklist item updated successfully",
+            "task": _serialize_task(updated_task),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error updating checklist item for task %s: %s", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error updating checklist item for task %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to update checklist item: {exc}")
