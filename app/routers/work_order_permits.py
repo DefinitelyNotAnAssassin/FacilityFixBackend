@@ -16,6 +16,7 @@ class CreateWorkOrderPermitRequest(BaseModel):
     valid_to: str
     contractors: List[dict]
     unit_id: Optional[str] = None
+    concern_slip_id: Optional[str] = None  # Optional link to concern slip
     attachments: Optional[List[str]] = []
 
 class CreateWorkOrderPermitFromConcernRequest(BaseModel):
@@ -57,11 +58,22 @@ async def _create_work_order_permit_logic(
     day_of_year = now.timetuple().tm_yday
     formatted_id = f"WP-{year}-{str(day_of_year).zfill(5)}"
     
+    # If concern_slip_id is provided, get the concern slip and format title
+    title = "Work Order Permit"
+    concern_slip_id = request.concern_slip_id
+    
+    if concern_slip_id:
+        success, concern_slip, error = await db.get_document("concern_slips", concern_slip_id)
+        if success and concern_slip:
+            concern_slip_title = concern_slip.get("title", "Untitled Concern")
+            title = f"Work Order for: {concern_slip_title}"
+    
     work_order_data = {
         "id": work_order_id,
         "formatted_id": formatted_id,
+        "concern_slip_id": concern_slip_id,  # Include concern_slip_id if provided
         "requested_by": current_user["uid"],
-        "title": "Work Order Permit",
+        "title": title,
         "description": request.request_type_detail,
         "location": request.location,
         "category": "general",

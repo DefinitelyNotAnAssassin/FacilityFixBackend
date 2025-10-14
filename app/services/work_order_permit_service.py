@@ -27,9 +27,13 @@ class WorkOrderPermitService:
         if not requester_profile or requester_profile.role != "tenant":
             raise ValueError("Only tenants can request work order permits")
 
+        # Format title similar to job service: "Work Order for: {concern_slip.title}"
+        concern_slip_title = concern_slip.get("title", "Untitled Concern")
+        
         permit_data_complete = {
             "id": str(uuid.uuid4()),
             "concern_slip_id": concern_slip_id,
+            "title": f"Work Order for: {concern_slip_title}",
             "requested_by": requested_by,
             "unit_id": permit_data["unit_id"],
             "contractor_name": permit_data["contractor_name"],
@@ -41,6 +45,7 @@ class WorkOrderPermitService:
             "specific_instructions": permit_data["specific_instructions"],
             "entry_requirements": permit_data.get("entry_requirements"),
             "status": "pending",
+            "request_type": "Work Order Permit",
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
