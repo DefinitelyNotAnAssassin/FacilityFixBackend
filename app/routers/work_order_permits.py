@@ -320,9 +320,13 @@ async def get_pending_permits(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get pending permits: {str(e)}")
 
+class CompleteWorkOrderRequest(BaseModel):
+    completion_notes: Optional[str] = None
+
 @router.patch("/{work_order_id}/complete", response_model=dict)
 async def complete_work_order_request(
     work_order_id: str,
+    request: CompleteWorkOrderRequest = None,
     current_user: dict = Depends(get_current_user),
     _: None = Depends(require_role(["admin", "tenant"]))
 ):
@@ -333,36 +337,45 @@ async def complete_work_order_request(
         db = DatabaseService()
         
         # Try to get from work_order_permits collection
-        success, permits_data, error = await db.query_documents("work_order_permits", [("id", work_order_id)])
+        success, permits_data, error = await db.query_documents("work_order_permits", [("id", "==", work_order_id)])
         
         if success and permits_data and len(permits_data) > 0:
-            # Update status to completed
-            # Get all documents to find the Firebase document ID
-            all_permits = await db.get_all_documents("work_order_permits")
-            firebase_doc_id = None
+            permit_data = permits_data[0]
             
-            for permit in all_permits:
-                if permit.get("id") == work_order_id:
-                    firebase_doc_id = permit.get("_firebase_doc_id")
-                    break
+            # Get the Firestore document ID from the query result
+            # Try multiple possible field names for the document ID
+            firebase_doc_id = (
+                permit_data.get("_doc_id") or 
+                permit_data.get("_firebase_doc_id") or 
+                permit_data.get("doc_id") or
+                work_order_id  # fallback to the work_order_id itself
+            )
             
-            if firebase_doc_id:
-                await db.update_document("work_order_permits", firebase_doc_id, {
-                    "status": "completed",
-                    "completed_at": datetime.utcnow(),
-                    "updated_at": datetime.utcnow()
-                })
-                
-                return {
-                    "success": True,
-                    "message": "Work order permit marked as completed"
-                }
-            else:
-                # If no Firebase doc ID, update by creating a new entry (fallback)
-                raise HTTPException(status_code=500, detail="Could not find Firebase document ID")
+            update_data = {
+                "status": "completed",
+                "completed_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+                "completed_by": current_user["uid"]
+            }
+            
+            # Add completion notes if provided
+            if request and request.completion_notes:
+                update_data["completion_notes"] = request.completion_notes
+            
+            success, error = await db.update_document("work_order_permits", firebase_doc_id, update_data)
+            
+            if not success:
+                raise HTTPException(status_code=500, detail=f"Failed to update document: {error}")
+            
+            return {
+                "success": True,
+                "message": "Work order permit marked as completed"
+            }
         else:
             raise HTTPException(status_code=404, detail="Work order permit not found")
             
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to complete work order: {str(e)}")
 
