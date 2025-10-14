@@ -188,24 +188,45 @@ class JobService(BaseModel):
     updated_at: Optional[datetime] = None
 class WorkOrderPermit(BaseModel):
     id: Optional[str] = None
-    concern_slip_id: str  # Links to concern_slip
+    
+    # Required fields for both standalone and concern-linked permits
     requested_by: str  # tenant user_id
-    unit_id: str
-    contractor_name: str
-    contractor_contact: str
-    contractor_company: Optional[str] = None
-    work_description: str
-    proposed_start_date: datetime
-    estimated_duration: str  # e.g., "2 hours", "1 day"
-    specific_instructions: str
-    entry_requirements: Optional[str] = None  # Special access needs
     status: str = Field(default="pending")  # pending, approved, denied, completed
+    
+    # Optional fields - concern slip workflow
+    concern_slip_id: Optional[str] = None  # Links to concern_slip (if created from concern)
+    contractor_name: Optional[str] = None
+    contractor_contact: Optional[str] = None
+    contractor_company: Optional[str] = None
+    work_description: Optional[str] = None
+    proposed_start_date: Optional[datetime] = None
+    estimated_duration: Optional[str] = None  # e.g., "2 hours", "1 day"
+    specific_instructions: Optional[str] = None
+    entry_requirements: Optional[str] = None  # Special access needs
+    
+    # Optional fields - standalone workflow
+    formatted_id: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+    category: Optional[str] = None
+    priority: Optional[str] = None
+    request_type: Optional[str] = None
+    unit_id: Optional[str] = None
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    contractors: Optional[List[dict]] = None
+    attachments: Optional[List[str]] = None
+    submitted_at: Optional[str] = None
+    
+    # Common approval/completion fields
     approved_by: Optional[str] = None  # admin user_id
     approval_date: Optional[datetime] = None
     denial_reason: Optional[str] = None
     permit_conditions: Optional[str] = None  # Special conditions for approval
     actual_start_date: Optional[datetime] = None
     actual_completion_date: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     admin_notes: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

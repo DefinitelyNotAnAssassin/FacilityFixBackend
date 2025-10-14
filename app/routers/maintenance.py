@@ -383,10 +383,29 @@ async def update_maintenance_checklist(
                     detail="'completed' field must be a boolean"
                 )
 
-        # Update the task with the new checklist
+        # Determine status based on checklist completion
+        total_items = len(checklist_data.checklist_completed)
+        completed_items = sum(1 for item in checklist_data.checklist_completed if item.get("completed", False))
+        
+        update_data = {"checklist_completed": checklist_data.checklist_completed}
+        
+        # Auto-update status based on checklist completion
+        if total_items > 0:
+            if completed_items == total_items:
+                # All items completed
+                update_data["status"] = "completed"
+                update_data["completed_at"] = datetime.now()
+                logger.info("All checklist items completed for task %s, setting status to 'completed'", task_id)
+            elif completed_items > 0:
+                # Some items completed - set to in_progress
+                update_data["status"] = "in_progress"
+                logger.info("Checklist progress for task %s: %d/%d items completed, setting status to 'in_progress'", 
+                           task_id, completed_items, total_items)
+
+        # Update the task with the new checklist and status
         updated_task = await maintenance_task_service.update_task(
             task_id,
-            {"checklist_completed": checklist_data.checklist_completed}
+            update_data
         )
 
         if not updated_task:
@@ -453,10 +472,31 @@ async def update_checklist_item(
                 detail=f"Checklist item with id '{item_id}' not found"
             )
 
+        # Determine status based on checklist completion
+        total_items = len(updated_checklist)
+        completed_items = sum(1 for item in updated_checklist if item.get("completed", False))
+        
+        update_data = {"checklist_completed": updated_checklist}
+        
+        # Auto-update status based on checklist completion
+        if total_items > 0:
+            if completed_items == total_items:
+                # All items completed
+                update_data["status"] = "completed"
+                update_data["completed_at"] = datetime.now()
+                logger.info("All checklist items completed for task %s, setting status to 'completed'", task_id)
+            elif completed_items > 0:
+                # Some items completed - set to in_progress
+                update_data["status"] = "in_progress"
+                if not task.started_at:
+                    update_data["started_at"] = datetime.now()
+                logger.info("Checklist progress for task %s: %d/%d items completed, setting status to 'in_progress'", 
+                           task_id, completed_items, total_items)
+
         # Update the task
         updated_task = await maintenance_task_service.update_task(
             task_id,
-            {"checklist_completed": updated_checklist}
+            update_data
         )
 
         return {
