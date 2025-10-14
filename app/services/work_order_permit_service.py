@@ -86,7 +86,7 @@ class WorkOrderPermitService:
         if not approver_profile or approver_profile.role != "admin":
             raise ValueError("Only admins can approve work order permits")
 
-        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
         if not success or not permits_data or len(permits_data) == 0:
             raise ValueError("Work order permit not found")
 
