@@ -58,7 +58,9 @@ class WorkOrderPermitService:
         if not create_success:
             raise Exception(f"Failed to create work order permit: {create_error}")
         
+        # Update concern slip status to completed and set resolution type
         update_success, update_error = await self.db.update_document("concern_slips", concern_slip_id, {
+            "status": "completed",
             "resolution_type": "work_permit",
             "updated_at": datetime.utcnow()
         })

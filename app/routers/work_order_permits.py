@@ -100,6 +100,18 @@ async def _create_work_order_permit_logic(
     if not success:
         raise HTTPException(status_code=500, detail=f"Failed to create work order permit: {error}")
     
+    # If created from concern slip, update concern slip status to completed
+    if concern_slip_id:
+        update_success, update_error = await db.update_document("concern_slips", concern_slip_id, {
+            "status": "completed",
+            "resolution_type": "work_permit",
+            "updated_at": datetime.utcnow()
+        })
+        if update_success:
+            print(f"[Work Order Permit] Updated concern slip {concern_slip_id} status to completed")
+        else:
+            print(f"[Work Order Permit] Warning: Failed to update concern slip status: {update_error}")
+    
     return {
         "success": True,
         "id": work_order_id,
