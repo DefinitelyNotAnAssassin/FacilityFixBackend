@@ -90,6 +90,11 @@ class WorkOrderPermitService:
         if not success or not permits_data or len(permits_data) == 0:
             raise ValueError("Work order permit not found")
 
+        permit_data = permits_data[0]
+        
+        # Get the Firestore document ID from the query result
+        doc_id = permit_data.get("_doc_id") or permit_id
+        
         update_data = {
             "status": "approved",
             "approved_by": approved_by,
@@ -98,11 +103,10 @@ class WorkOrderPermitService:
             "updated_at": datetime.utcnow()
         }
 
-        success, error = await self._update_permit_by_custom_id(permit_id, update_data)
+        success, error = await self._update_permit_by_doc_id(doc_id, update_data)
         if not success:
             raise Exception(f"Failed to update permit: {error}")
         
-        permit_data = permits_data[0]
         # Notify requester about approval
         await notification_manager.notify_permit_approved(
             permit_id=permit_id,
@@ -114,7 +118,7 @@ class WorkOrderPermitService:
         )
 
         # Get updated permit
-        success, updated_permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+        success, updated_permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
         if not success or not updated_permits_data or len(updated_permits_data) == 0:
             raise Exception("Failed to retrieve updated permit")
         
@@ -128,10 +132,15 @@ class WorkOrderPermitService:
         if not denier_profile or denier_profile.role != "admin":
             raise ValueError("Only admins can deny work order permits")
 
-        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
         if not success or not permits_data or len(permits_data) == 0:
             raise ValueError("Work order permit not found")
 
+        permit_data = permits_data[0]
+        
+        # Get the Firestore document ID from the query result
+        doc_id = permit_data.get("_doc_id") or permit_id
+        
         update_data = {
             "status": "denied",
             "approved_by": denied_by,  # Track who made the decision
@@ -140,11 +149,10 @@ class WorkOrderPermitService:
             "updated_at": datetime.utcnow()
         }
 
-        success, error = await self._update_permit_by_custom_id(permit_id, update_data)
+        success, error = await self._update_permit_by_doc_id(doc_id, update_data)
         if not success:
             raise Exception(f"Failed to update permit: {error}")
         
-        permit_data = permits_data[0]
         # Notify requester about rejection
         await notification_manager.notify_permit_rejected(
             permit_id=permit_id,
@@ -155,7 +163,7 @@ class WorkOrderPermitService:
         )
 
         # Get updated permit
-        success, updated_permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+        success, updated_permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
         if not success or not updated_permits_data or len(updated_permits_data) == 0:
             raise Exception("Failed to retrieve updated permit")
         
@@ -168,10 +176,15 @@ class WorkOrderPermitService:
         if status not in valid_statuses:
             raise ValueError(f"Invalid status. Must be one of: {valid_statuses}")
 
-        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
         if not success or not permits_data or len(permits_data) == 0:
             raise ValueError("Work order permit not found")
 
+        permit_data = permits_data[0]
+        
+        # Get the Firestore document ID from the query result
+        doc_id = permit_data.get("_doc_id") or permit_id
+        
         update_data = {
             "status": status,
             "updated_at": datetime.utcnow()
@@ -185,7 +198,7 @@ class WorkOrderPermitService:
         if notes:
             update_data["admin_notes"] = notes
 
-        success, error = await self._update_permit_by_custom_id(permit_id, update_data)
+        success, error = await self._update_permit_by_doc_id(doc_id, update_data)
         if not success:
             raise Exception(f"Failed to update permit status: {error}")
 
@@ -219,7 +232,7 @@ class WorkOrderPermitService:
     async def start_work(self, permit_id: str, started_by: str) -> WorkOrderPermit:
         """Mark work as started (updates actual start date)"""
         
-        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
         if not success or not permits_data or len(permits_data) == 0:
             raise ValueError("Work order permit not found")
         
@@ -227,12 +240,15 @@ class WorkOrderPermitService:
         if permit_data.get("status") != "approved":
             raise ValueError("Work can only be started on approved permits")
 
+        # Get the Firestore document ID from the query result
+        doc_id = permit_data.get("_doc_id") or permit_id
+        
         update_data = {
             "actual_start_date": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
 
-        success, error = await self._update_permit_by_custom_id(permit_id, update_data)
+        success, error = await self._update_permit_by_doc_id(doc_id, update_data)
         if not success:
             raise Exception(f"Failed to start work: {error}")
 
@@ -255,28 +271,28 @@ class WorkOrderPermitService:
 
     async def get_work_order_permit(self, permit_id: str) -> Optional[WorkOrderPermit]:
         """Get work order permit by ID"""
-        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+        success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
         if not success or not permits_data or len(permits_data) == 0:
             return None
         return WorkOrderPermit(**permits_data[0])
 
     async def get_permits_by_tenant(self, tenant_id: str) -> List[WorkOrderPermit]:
         """Get all work order permits requested by a tenant"""
-        success, permits, error = await self.db.query_documents("work_order_permits", [("requested_by", tenant_id)])
+        success, permits, error = await self.db.query_documents("work_order_permits", [("requested_by", "==", tenant_id)])
         if not success:
             raise Exception(f"Failed to query permits: {error}")
         return [WorkOrderPermit(**permit) for permit in permits]
 
     async def get_permits_by_status(self, status: str) -> List[WorkOrderPermit]:
         """Get all work order permits with specific status"""
-        success, permits, error = await self.db.query_documents("work_order_permits", [("status", status)])
+        success, permits, error = await self.db.query_documents("work_order_permits", [("status", "==", status)])
         if not success:
             raise Exception(f"Failed to query permits: {error}")
         return [WorkOrderPermit(**permit) for permit in permits]
 
     async def get_pending_permits(self) -> List[WorkOrderPermit]:
         """Get all pending work order permits (Admin view)"""
-        success, permits, error = await self.db.query_documents("work_order_permits", [("status", "pending")])
+        success, permits, error = await self.db.query_documents("work_order_permits", [("status", "==", "pending")])
         if not success:
             raise Exception(f"Failed to query pending permits: {error}")
         return [WorkOrderPermit(**permit) for permit in permits]
@@ -286,34 +302,15 @@ class WorkOrderPermitService:
         permits = await self.db.get_all_documents("work_order_permits")
         return [WorkOrderPermit(**permit) for permit in permits]
 
-    async def _update_permit_by_custom_id(self, permit_id: str, update_data: dict) -> tuple[bool, str]:
-        """Helper method to update work order permit by custom ID"""
+    async def _update_permit_by_doc_id(self, document_id: str, update_data: dict) -> tuple[bool, str]:
+        """Helper method to update work order permit by document ID"""
         try:
-            # Get all permits to find the one with matching custom ID
-            all_permits = await self.db.get_all_documents("work_order_permits")
-            target_permit = None
-            firebase_doc_id = None
+            # Use the document ID directly to update
+            success, error = await self.db.update_document("work_order_permits", document_id, update_data)
             
-            for i, permit in enumerate(all_permits):
-                if permit.get("id") == permit_id:
-                    target_permit = permit
-                    # Since we can't get the Firebase doc ID directly, we'll use the index
-                    # This is a workaround - ideally we'd have the Firebase doc ID
-                    break
+            if not success:
+                return False, error or "Failed to update work order permit"
             
-            if not target_permit:
-                return False, "Work order permit not found"
-            
-            # For now, we'll use a different approach since we can't easily get Firebase doc IDs
-            # We'll delete and recreate the document (not ideal but functional)
-            # This is a limitation of the current database service design
-            
-            # Update the permit data
-            target_permit.update(update_data)
-            
-            # Since we can't update by Firebase doc ID easily, let's return success
-            # The actual update will need to be handled differently
-            # For now, this is a placeholder that indicates the operation would succeed
             return True, ""
             
         except Exception as e:
