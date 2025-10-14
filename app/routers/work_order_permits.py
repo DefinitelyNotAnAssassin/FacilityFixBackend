@@ -336,20 +336,37 @@ async def complete_work_order_request(
         
         db = DatabaseService()
         
-        # Try to get from work_order_permits collection
-        success, permits_data, error = await db.query_documents("work_order_permits", [("id", "==", work_order_id)])
+        # Try both formatted_id and id fields to find the document
+        # First try by formatted_id (WP-YYYY-XXXXX format)
+        success, permits_data, error = await db.query_documents(
+            "work_order_permits", 
+            [("formatted_id", "==", work_order_id)]
+        )
+        
+        # If not found by formatted_id, try by id field
+        if not success or not permits_data or len(permits_data) == 0:
+            success, permits_data, error = await db.query_documents(
+                "work_order_permits", 
+                [("id", "==", work_order_id)]
+            )
         
         if success and permits_data and len(permits_data) > 0:
             permit_data = permits_data[0]
             
             # Get the Firestore document ID from the query result
-            # Try multiple possible field names for the document ID
+            # The document ID is typically stored as the key in Firestore
+            # DatabaseService should return it with the query result
             firebase_doc_id = (
                 permit_data.get("_doc_id") or 
                 permit_data.get("_firebase_doc_id") or 
                 permit_data.get("doc_id") or
+                permit_data.get("id") or  # Try the id field
                 work_order_id  # fallback to the work_order_id itself
             )
+            
+            print(f"[Work Order Complete] Found permit with ID: {work_order_id}")
+            print(f"[Work Order Complete] Using Firebase doc ID: {firebase_doc_id}")
+            print(f"[Work Order Complete] Available fields: {list(permit_data.keys())}")
             
             update_data = {
                 "status": "completed",
@@ -362,17 +379,24 @@ async def complete_work_order_request(
             if request and request.completion_notes:
                 update_data["completion_notes"] = request.completion_notes
             
+            print(f"[Work Order Complete] Updating document {firebase_doc_id} with data: {update_data}")
+            
             success, error = await db.update_document("work_order_permits", firebase_doc_id, update_data)
             
             if not success:
+                print(f"[Work Order Complete] Update failed: {error}")
                 raise HTTPException(status_code=500, detail=f"Failed to update document: {error}")
+            
+            print(f"[Work Order Complete] Successfully marked work order {work_order_id} as completed")
             
             return {
                 "success": True,
-                "message": "Work order permit marked as completed"
+                "message": "Work order permit marked as completed",
+                "work_order_id": work_order_id
             }
         else:
-            raise HTTPException(status_code=404, detail="Work order permit not found")
+            print(f"[Work Order Complete] Work order permit not found: {work_order_id}")
+            raise HTTPException(status_code=404, detail=f"Work order permit not found with ID: {work_order_id}")
             
     except HTTPException:
         raise
@@ -411,3 +435,7 @@ async def get_all_permits(
         return permits
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get permits: {str(e)}")
+
+
+
+
