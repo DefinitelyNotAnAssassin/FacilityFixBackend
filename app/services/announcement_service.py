@@ -153,33 +153,13 @@ class AnnouncementService:
     
     async def get_announcements(
         self,
-        building_id: str,
-        audience: str = "all",
-        active_only: bool = True,
         limit: int = 50,
-        user_id: Optional[str] = None,
-        user_role: Optional[str] = None,
-        user_department: Optional[str] = None,
-        announcement_type: Optional[str] = None,
-        priority_level: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        published_only: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Get announcements for a specific building with advanced filtering
         
         Args:
-            building_id: Building ID to filter by
-            audience: Target audience (tenants, staff, admins, all)
-            active_only: Whether to return only active announcements
             limit: Maximum number of announcements to return
-            user_id: Specific user ID for targeted announcements
-            user_role: User's role for role-based filtering
-            user_department: User's department for department-based filtering
-            announcement_type: Filter by announcement type
-            priority_level: Filter by priority level
-            tags: Filter by tags
-            published_only: Only return published announcements
             
         Returns:
             List of announcement dictionaries
@@ -189,56 +169,15 @@ class AnnouncementService:
             # Query announcements
             success, announcements, error = await self.db.query_documents(
                 COLLECTIONS['announcements'],
-                limit=1000  # Get all matching, we'll filter in memory
+                limit=1000  
             )
             
             if not success:
                 logger.error(f"Failed to get announcements: {error}")
                 return []
             
-            # Advanced filtering based on targeting
-            filtered_announcements = []
-            now = datetime.now(timezone.utc)
-            
-            for announcement in announcements:
-                # Skip expired announcements
-                expiry = announcement.get('expiry_date')
-                if expiry:
-                    # Ensure expiry is timezone-aware
-                    if expiry.tzinfo is None:
-                        expiry = expiry.replace(tzinfo=timezone.utc)
-                    if expiry < now:
-                        continue
-                
-                # Skip scheduled announcements not yet published
-                scheduled = announcement.get('scheduled_publish_date')
-                if scheduled:
-                    # Ensure scheduled is timezone-aware
-                    if scheduled.tzinfo is None:
-                        scheduled = scheduled.replace(tzinfo=timezone.utc)
-                    if scheduled > now:
-                        continue
-                
-                # Ensure the 'id' field matches the actual document ID for consistency
-                # This handles both new announcements (where id == _doc_id) and legacy ones
-                doc_id = announcement.get('_doc_id')
-                if doc_id and announcement.get('id') != doc_id:
-                    # Use the actual Firestore document ID as the canonical ID
-                    announcement['id'] = doc_id
-                          
-                filtered_announcements.append(announcement)
-            
-            # Sort by priority and date
-            priority_order = {'critical': 0, 'urgent': 1, 'high': 2, 'normal': 3, 'low': 4}
-            filtered_announcements.sort(
-                key=lambda x: (
-                    priority_order.get(x.get('priority_level', 'normal'), 3),
-                    -(x.get('date_added', datetime.min).timestamp() if isinstance(x.get('date_added'), datetime) else 0)
-                )
-            )
-            
             # Apply limit
-            return filtered_announcements[:limit]
+            return announcements[:limit]
                 
         except Exception as e:
             logger.error(f"Error getting announcements: {str(e)}")

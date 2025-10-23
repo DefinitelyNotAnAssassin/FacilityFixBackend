@@ -206,16 +206,7 @@ async def get_announcements(
             )
         else:
             # Admin can see all announcements including drafts
-            announcements = await announcement_service.get_announcements(
-                building_id=building_id,
-                audience=audience,
-                active_only=active_only,
-                limit=limit,
-                announcement_type=announcement_type,
-                priority_level=priority_level,
-                tags=tag_list,
-                published_only=published_only
-            )
+            announcements = await announcement_service.get_announcements()
         
         return AnnouncementListResponse(
             announcements=[AnnouncementResponse(**ann) for ann in announcements],

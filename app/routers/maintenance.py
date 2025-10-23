@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.auth.dependencies import get_current_user
 from app.models.database_models import MaintenanceTask
 from app.services.maintenance_task_service import maintenance_task_service
+from app.services.special_maintenance_service import special_maintenance_service
 
 logger = logging.getLogger(__name__)
 
@@ -513,3 +514,125 @@ async def update_checklist_item(
     except Exception as exc:  # pragma: no cover
         logger.error("Unexpected error updating checklist item for task %s: %s", task_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to update checklist item: {exc}")
+
+
+# Special Maintenance Tasks Endpoints
+
+@router.post("/special/initialize")
+async def initialize_special_tasks(
+):
+    """Initialize special maintenance tasks (Fire Safety, Earthquake, Typhoon/Flood)."""
+    try:
+
+        results = await special_maintenance_service.initialize_special_tasks(
+        )
+
+        return {
+            "success": True,
+            "message": "Special tasks initialization completed",
+            "results": results,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error initializing special tasks: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to initialize special tasks: {exc}")
+
+
+@router.get("/special")
+async def get_special_tasks(
+    current_user: dict = Depends(get_current_user),
+):
+    """Get all special maintenance tasks."""
+    try:
+        tasks = await special_maintenance_service.get_special_tasks()
+        serialized = [_serialize_task(task) for task in tasks]
+
+        return {
+            "success": True,
+            "tasks": serialized,
+        }
+
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error getting special tasks: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to get special tasks: {exc}")
+
+
+@router.get("/special/summary")
+async def get_special_tasks_summary(
+    current_user: dict = Depends(get_current_user),
+):
+    """Get summary information for all special maintenance tasks."""
+    try:
+        summaries = {}
+
+        for task_key in ["fire_safety", "earthquake", "typhoon_flood"]:
+            summaries[task_key] = await special_maintenance_service.get_special_task_summary(task_key)
+
+        return {
+            "success": True,
+            "summaries": summaries,
+        }
+
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error getting special tasks summary: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to get special tasks summary: {exc}")
+
+
+@router.get("/special/{task_key}")
+async def get_special_task(
+    task_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get a specific special maintenance task by key."""
+    try:
+        if task_key not in ["fire_safety", "earthquake", "typhoon_flood"]:
+            raise HTTPException(status_code=400, detail="Invalid task key")
+
+        task = await special_maintenance_service.get_special_task_by_key(task_key)
+
+        if not task:
+            raise HTTPException(status_code=404, detail="Special task not found")
+
+        return {
+            "success": True,
+            "task": _serialize_task(task),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error getting special task %s: %s", task_key, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to get special task: {exc}")
+
+
+@router.post("/special/{task_key}/reset")
+async def reset_special_task(
+    task_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Reset a special task's checklist and schedule next occurrence."""
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        if task_key not in ["fire_safety", "earthquake", "typhoon_flood"]:
+            raise HTTPException(status_code=400, detail="Invalid task key")
+
+        task = await special_maintenance_service.reset_special_task_checklist(task_key)
+
+        if not task:
+            raise HTTPException(status_code=404, detail="Special task not found")
+
+        return {
+            "success": True,
+            "message": f"Special task {task_key} reset successfully",
+            "task": _serialize_task(task),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error resetting special task %s: %s", task_key, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to reset special task: {exc}")
