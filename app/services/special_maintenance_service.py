@@ -7,6 +7,7 @@ from app.database.collections import COLLECTIONS
 from app.database.database_service import database_service
 from app.models.database_models import MaintenanceTask
 from app.services.maintenance_task_service import maintenance_task_service
+from app.services.user_id_service import user_id_service
 
 logger = logging.getLogger(__name__)
 
@@ -36,42 +37,50 @@ SPECIAL_TASK_TEMPLATES = {
             {
                 "id": "fs_1",
                 "task": "Inspect fire extinguishers (pressure, accessibility, seals)",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "fs_2",
                 "task": "Test fire alarm systems and smoke detectors",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "fs_3",
                 "task": "Check emergency exit signs and lighting",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "fs_4",
                 "task": "Verify fire doors close properly and are unobstructed",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "fs_5",
                 "task": "Inspect fire sprinkler systems for leaks or damage",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "fs_6",
                 "task": "Ensure fire evacuation routes are clear and marked",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "fs_7",
                 "task": "Check fire hose cabinets and equipment",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "fs_8",
                 "task": "Review and update emergency contact lists",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             }
         ]
     },
@@ -92,42 +101,50 @@ SPECIAL_TASK_TEMPLATES = {
             {
                 "id": "eq_1",
                 "task": "Secure heavy furniture and equipment to walls",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "eq_2",
                 "task": "Check structural supports and foundation",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "eq_3",
                 "task": "Inspect gas line shutoff valves and accessibility",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "eq_4",
                 "task": "Verify emergency supplies (water, first aid, flashlights)",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "eq_5",
                 "task": "Test earthquake detection and alert systems",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "eq_6",
                 "task": "Review earthquake evacuation procedures with staff",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "eq_7",
                 "task": "Check designated safe zones and assembly points",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "eq_8",
                 "task": "Inspect building for cracks or structural weaknesses",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             }
         ]
     },
@@ -148,47 +165,56 @@ SPECIAL_TASK_TEMPLATES = {
             {
                 "id": "tf_1",
                 "task": "Inspect and clear drainage systems and gutters",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "tf_2",
                 "task": "Check roof integrity and seal potential leak points",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "tf_3",
                 "task": "Secure outdoor equipment and materials",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "tf_4",
                 "task": "Test sump pumps and backup power systems",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "tf_5",
                 "task": "Verify flood barriers and sandbags availability",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "tf_6",
                 "task": "Inspect windows and doors for proper sealing",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "tf_7",
                 "task": "Check emergency communication systems",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "tf_8",
                 "task": "Review typhoon/flood evacuation procedures",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             },
             {
                 "id": "tf_9",
                 "task": "Ensure emergency supplies are stocked and accessible",
-                "completed": False
+                "completed": False,
+                "assigned_to": None
             }
         ]
     }
@@ -246,15 +272,75 @@ class SpecialMaintenanceService:
 
         return results
 
-    async def get_special_tasks(self) -> List[MaintenanceTask]:
-        """Retrieve all special maintenance tasks."""
+    async def get_special_tasks(self, user_id: Optional[str] = None) -> List[MaintenanceTask]:
+        """Retrieve special maintenance tasks assigned to the specified user.
+
+        Args:
+            user_id: The Firebase UID of the user to filter tasks by. If None, returns all special tasks.
+
+        Returns:
+            List of MaintenanceTask objects assigned to the user (either whole task or checklist items).
+        """
         tasks = []
+
+        # If user_id is provided, fetch the user's full name for comparison
+        user_full_name = None
+        if user_id:
+            try:
+                success, user_data, error = await database_service.get_document(
+                    COLLECTIONS['users'], user_id
+                )
+                if success and user_data:
+                    # Try both camelCase and snake_case for compatibility
+                    first_name = user_data.get('first_name') or user_data.get('firstName', '')
+                    last_name = user_data.get('last_name') or user_data.get('lastName', '')
+                    user_full_name = f"{first_name} {last_name}".strip()
+                    logger.info(f"Fetched user full name: '{user_full_name}' for uid: {user_id}")
+                else:
+                    logger.warning(f"Could not fetch user data for uid {user_id}: {error}")
+                    return []  # Return empty list if user not found
+            except Exception as e:
+                logger.error(f"Error fetching user data for uid {user_id}: {e}")
+                return []
 
         for task_id in SPECIAL_TASK_IDS.values():
             try:
                 task = await maintenance_task_service.get_task(task_id)
                 if task:
-                    tasks.append(task)
+                    # If no user_id specified, return all tasks
+                    if user_id is None:
+                        tasks.append(task)
+                        continue
+
+                    logger.info(f"[DEBUG] Checking task {task_id}: assigned_to='{task.assigned_to}', comparing with user_full_name='{user_full_name}'")
+
+                    # Check if whole task is assigned to user (compare by full name)
+                    if task.assigned_to == user_full_name:
+                        tasks.append(task)
+                        logger.info(f"✓ Special task {task_id} MATCHED for user '{user_full_name}' (whole task)")
+                        continue
+
+                    # Check if any checklist item is assigned to user (compare by full name)
+                    checklist = task.checklist_completed or []
+                    logger.info(f"[DEBUG] Checking {len(checklist)} checklist items for task {task_id}")
+
+                    for idx, item in enumerate(checklist):
+                        item_assigned = item.get("assigned_to")
+                        logger.info(f"  [DEBUG] Checklist item {idx}: task='{item.get('task')}', assigned_to='{item_assigned}'")
+                        if item_assigned == user_full_name:
+                            logger.info(f"  ✓ MATCHED checklist item {idx} for user '{user_full_name}'")
+
+                    has_assigned_item = any(
+                        item.get("assigned_to") == user_full_name
+                        for item in checklist
+                    )
+
+                    if has_assigned_item:
+                        tasks.append(task)
+                        logger.info(f"✓ Special task {task_id} MATCHED for user '{user_full_name}' (checklist item)")
+                    else:
+                        logger.info(f"✗ Special task {task_id} NOT matched for user '{user_full_name}'")
+
             except Exception as e:
                 logger.error(f"Error fetching special task {task_id}: {e}")
 

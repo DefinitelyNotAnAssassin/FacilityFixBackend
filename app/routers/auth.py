@@ -290,7 +290,7 @@ async def get_current_user_info(current_user: Dict[str, Any] = Depends(get_curre
             "role": current_user.get("role"),
             "building_id": current_user.get("building_id"),
             "unit_id": current_user.get("unit_id"),
-            "testing this out": "hello",
+            "tenant_id": profile.get("user_id"),
             "staff_department": current_user.get("staff_department"),  # ✅ expose only staff_department
         }
 

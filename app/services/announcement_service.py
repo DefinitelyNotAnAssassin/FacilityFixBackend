@@ -114,7 +114,8 @@ class AnnouncementService:
                 "attachments": attachments or [],
                 "tags": tags or [],
                 "view_count": 0,
-                
+                "read_by": [],  # Track which users have read this announcement
+
                 # Timestamps
                 "date_added": now,
                 "published_at": now if should_publish_now else None,
@@ -672,30 +673,54 @@ class AnnouncementService:
     
     async def increment_view_count(self, announcement_id: str, user_id: str) -> bool:
         """
-        Increment view count for an announcement
-        Can be enhanced to track individual user views
+        Mark announcement as read by user and increment view count
+
+        Args:
+            announcement_id: The announcement document ID
+            user_id: The user who viewed the announcement
+
+        Returns:
+            True if successful, False otherwise
         """
         try:
             announcement = await self.get_announcement_by_id(announcement_id)
             if not announcement:
+                logger.warning(f"Announcement {announcement_id} not found when marking as read")
                 return False
-            
-            current_count = announcement.get('view_count', 0)
-            updates = {
-                'view_count': current_count + 1,
-                'updated_at': datetime.now(timezone.utc)
-            }
-            
-            success, error = await self.db.update_document(
-                COLLECTIONS['announcements'],
-                announcement_id,
-                updates
-            )
-            
-            return success
-            
+
+            # Get current read_by list
+            read_by = announcement.get('read_by', [])
+
+            # Only update if user hasn't already read it
+            if user_id not in read_by:
+                read_by.append(user_id)
+                current_count = announcement.get('view_count', 0)
+
+                updates = {
+                    'read_by': read_by,
+                    'view_count': current_count + 1,
+                    'updated_at': datetime.now(timezone.utc)
+                }
+
+                success, error = await self.db.update_document(
+                    COLLECTIONS['announcements'],
+                    announcement_id,
+                    updates
+                )
+
+                if success:
+                    logger.info(f"User {user_id} marked announcement {announcement_id} as read")
+                else:
+                    logger.error(f"Failed to mark announcement as read: {error}")
+
+                return success
+            else:
+                # Already read by this user, no update needed
+                logger.debug(f"Announcement {announcement_id} already read by user {user_id}")
+                return True
+
         except Exception as e:
-            logger.error(f"Error incrementing view count: {str(e)}")
+            logger.error(f"Error marking announcement as read: {str(e)}")
             return False
     
     async def get_user_targeted_announcements(

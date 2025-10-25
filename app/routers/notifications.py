@@ -161,6 +161,43 @@ async def get_user_notifications(
         logger.error(f"Error retrieving user notifications: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve notifications: {str(e)}")
 
+@router.delete("/{notification_id}")
+async def delete_notification(
+    notification_id: str = Path(..., description="Notification ID"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a specific notification"""
+    try:
+        user_id = current_user["uid"]
+        
+        success, notification, error = await database_service.get_document(
+            COLLECTIONS['notifications'],
+            notification_id
+        )
+        
+        if not success or not notification:
+            raise HTTPException(status_code=404, detail="Notification not found")
+        
+        # Verify notification belongs to user (unless admin)
+        if current_user.get("role") != "admin" and notification.get("recipient_id") != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Delete the notification
+        success, error = await database_service.delete_document(
+            COLLECTIONS['notifications'],
+            notification_id
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to delete notification: {error}")
+        
+        return {"message": "Notification deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting notification: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete notification: {str(e)}")
 
 @router.get("/unread-count")
 async def get_unread_count(
@@ -211,7 +248,7 @@ async def get_unread_count(
         raise HTTPException(status_code=500, detail=f"Failed to count notifications: {str(e)}")
 
 
-@router.patch("/mark-read")
+@router.post("/mark-read")
 async def mark_notifications_read(
     request: MarkAsReadRequest,
     current_user: dict = Depends(get_current_user)

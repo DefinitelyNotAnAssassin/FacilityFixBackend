@@ -197,7 +197,6 @@ async def get_user(
 async def update_user(
     user_id: str,
     user_update: UserUpdate,
-    current_user: dict = Depends(require_admin),
 ):
     """Update the user whose `user_id` == {user_id} (e.g., T-0001)."""
     try:

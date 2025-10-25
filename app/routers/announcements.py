@@ -73,23 +73,25 @@ class AnnouncementResponse(BaseModel):
     audience: str
     location_affected: Optional[str]
     is_active: bool
-    
+
     # Enhanced targeting
     target_departments: Optional[List[str]] = []
     target_user_ids: Optional[List[str]] = []
     target_roles: Optional[List[str]] = []
-    
+
     # Scheduling and priority
     priority_level: str = "normal"
     scheduled_publish_date: Optional[datetime] = None
     expiry_date: Optional[datetime] = None
     is_published: bool = True
-    
+
     # Additional metadata
     attachments: Optional[List[str]] = []
     tags: Optional[List[str]] = []
     view_count: int = 0
-    
+    read_by: Optional[List[str]] = []  # List of user IDs who have read this announcement
+    is_read: bool = False  # Whether current user has read this announcement
+
     # Timestamps
     date_added: datetime
     published_at: Optional[datetime] = None
@@ -176,45 +178,42 @@ async def get_announcements(
 ):
     """Get announcements for building with advanced filtering"""
     try:
-        
+
         print("CURRENT USER: ", current_user)
         logger.info(f"Fetching announcements for building_id: {building_id}")
         # Get user details
         user_role = current_user.get('role', 'tenant')
         user_id = current_user.get('uid')
         user_department = current_user.get('department')
-        
+
         # Parse tags
         tag_list = [t.strip() for t in tags.split(',')] if tags else None
-        
+
         # If user is not admin, show only published announcements they have access to
         if user_role != 'admin':
             published_only = True
             # Use their own targeting context
             announcements = await announcement_service.get_announcements(
-                building_id=building_id,
-                audience=audience,
-                active_only=active_only,
+
                 limit=limit,
-                user_id=user_id,
-                user_role=user_role,
-                user_department=user_department,
-                announcement_type=announcement_type,
-                priority_level=priority_level,
-                tags=tag_list,
-                published_only=published_only
+
             )
         else:
             # Admin can see all announcements including drafts
             announcements = await announcement_service.get_announcements()
-        
+
+        # Add is_read field based on current user
+        for ann in announcements:
+            read_by = ann.get('read_by', [])
+            ann['is_read'] = user_id in read_by
+
         return AnnouncementListResponse(
             announcements=[AnnouncementResponse(**ann) for ann in announcements],
             total_count=len(announcements),
             building_id=building_id,
             audience_filter=audience
         )
-        
+
     except Exception as e:
         logger.error(f"Error getting announcements: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get announcements: {str(e)}")
@@ -223,31 +222,36 @@ async def get_announcements(
 async def get_announcement(
     announcement_id: str = Path(..., description="Announcement ID"),
     current_user: dict = Depends(get_current_user)
-    
+
 ):
     """Get specific announcement by ID"""
     try:
         print("ANNOUNCEMENT ID: ", announcement_id)
         announcement = await announcement_service.get_announcement_by_id(announcement_id)
-        
+
         if not announcement:
             raise HTTPException(status_code=404, detail="Announcement not found")
-        
+
         # Check if user has access to this announcement
         user_role = current_user.get('role', 'tenant')
+        user_id = current_user.get('uid')
         announcement_audience = announcement.get('audience', 'all')
-        
+
         # Allow access if:
         # 1. User is admin (can see all)
         # 2. Announcement is for 'all'
         # 3. Announcement audience matches user role
-        if (user_role != 'admin' and 
-            announcement_audience != 'all' and 
+        if (user_role != 'admin' and
+            announcement_audience != 'all' and
             announcement_audience != user_role):
             raise HTTPException(status_code=403, detail="Access denied to this announcement")
-        
+
+        # Add is_read field based on current user
+        read_by = announcement.get('read_by', [])
+        announcement['is_read'] = user_id in read_by
+
         return AnnouncementResponse(**announcement)
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -439,21 +443,26 @@ async def get_user_targeted_announcements(
     """Get all announcements specifically targeted to the current user"""
     try:
         user_id = current_user.get('uid')
-        
+
         announcements = await announcement_service.get_user_targeted_announcements(
             user_id=user_id,
             building_id=building_id,
             active_only=active_only,
             limit=limit
         )
-        
+
+        # Add is_read field based on current user
+        for ann in announcements:
+            read_by = ann.get('read_by', [])
+            ann['is_read'] = user_id in read_by
+
         return AnnouncementListResponse(
             announcements=[AnnouncementResponse(**ann) for ann in announcements],
             total_count=len(announcements),
             building_id=building_id,
             audience_filter="targeted"
         )
-        
+
     except Exception as e:
         logger.error(f"Error getting user targeted announcements: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -9,6 +9,7 @@ from app.auth.dependencies import get_current_user
 from app.models.database_models import MaintenanceTask
 from app.services.maintenance_task_service import maintenance_task_service
 from app.services.special_maintenance_service import special_maintenance_service
+from app.services.user_id_service import user_id_service
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,66 @@ async def get_all_maintenance_tasks(
         raise HTTPException(status_code=500, detail=f"Failed to get maintenance tasks: {exc}")
 
 
+@router.get("/assigned-to-me")
+async def get_my_assigned_tasks(
+    building_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """Get maintenance tasks assigned to the current user (whole task or checklist items)."""
+    try:
+        user_id = current_user.get("uid")
+        current_user = await user_id_service.get_user_profile(user_id)
+        print(current_user)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found")
+
+        filters: Dict[str, Any] = {}
+        if building_id:
+            filters["building_id"] = building_id
+        if status:
+            filters["status"] = status
+        if category:
+            filters["category"] = category
+
+        # Get all tasks matching the filters
+        all_tasks = await maintenance_task_service.list_tasks(filters)
+
+        # Filter to only include:
+        # 1. Tasks where assigned_to == user_id
+        # 2. Tasks with checklist items where any item.assigned_to == user_id
+        assigned_tasks = []
+        for task in all_tasks:
+            # Check if whole task is assigned to user
+            if task.assigned_to == f"{current_user.first_name} {current_user.last_name}" or task.assigned_to == user_id:
+                assigned_tasks.append(task)
+                continue
+
+            # Check if any checklist item is assigned to user
+            checklist = task.checklist_completed or []
+            has_assigned_item = any(
+                item.get("assigned_to") == current_user.staff_id
+                for item in checklist
+            )
+
+            if has_assigned_item:
+                assigned_tasks.append(task)
+
+        serialized = [_serialize_task(task) for task in assigned_tasks]
+        logger.info("[DEBUG] Returning %d assigned tasks for user %s", len(serialized), user_id)
+        return serialized
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error getting assigned tasks: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error getting assigned tasks: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to get assigned tasks: {exc}")
+
+
 @router.get("/{task_id}")
 async def get_maintenance_task_by_id(
     task_id: str,
@@ -349,6 +410,59 @@ class ChecklistUpdate(BaseModel):
     checklist_completed: List[Dict[str, Any]]
 
 
+@router.post("/{task_id}/assign")
+async def assign_staff_to_maintenance_task(
+    task_id: str,
+    assignment_data: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Assign staff to a maintenance task."""
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        staff_id = assignment_data.get("staff_id") or assignment_data.get("assigned_to")
+        if not staff_id:
+            raise HTTPException(status_code=400, detail="staff_id is required")
+
+        # Get scheduled date if provided
+        scheduled_date = assignment_data.get("scheduled_date")
+        notes = assignment_data.get("notes")
+
+        # Build update payload
+        updates = {
+            "assigned_to": staff_id,
+            "status": "assigned",
+        }
+
+        if scheduled_date:
+            updates["scheduled_date"] = scheduled_date
+
+        if notes:
+            updates["notes"] = notes
+
+        # Update the task
+        updated_task = await maintenance_task_service.update_task(task_id, updates)
+
+        if not updated_task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        return {
+            "success": True,
+            "message": "Staff assigned successfully",
+            "task": _serialize_task(updated_task),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error assigning staff to task %s: %s", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error assigning staff to task %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to assign staff: {exc}")
+
+
 @router.patch("/{task_id}/checklist")
 async def update_maintenance_checklist(
     task_id: str,
@@ -357,7 +471,7 @@ async def update_maintenance_checklist(
 ):
     """
     Update the checklist for a maintenance task.
-    
+
     The checklist should be an array of objects with the following structure:
     [
         {
@@ -428,6 +542,63 @@ async def update_maintenance_checklist(
         raise HTTPException(status_code=500, detail=f"Failed to update checklist: {exc}")
 
 
+@router.post("/{task_id}/checklist/{item_id}/assign")
+async def assign_checklist_item(
+    task_id: str,
+    item_id: str,
+    assignment_data: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Assign a staff member to a specific checklist item."""
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        staff_id = assignment_data.get("staff_id") or assignment_data.get("assigned_to")
+        if not staff_id:
+            raise HTTPException(status_code=400, detail="staff_id is required")
+
+        # Get the current task
+        task = await maintenance_task_service.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        # Get checklist
+        checklist = task.checklist_completed or []
+
+        # Find and update the specific item
+        item_found = False
+        for item in checklist:
+            if item.get("id") == item_id:
+                item["assigned_to"] = staff_id
+                item_found = True
+                break
+
+        if not item_found:
+            raise HTTPException(status_code=404, detail=f"Checklist item {item_id} not found")
+
+        # Update the task with modified checklist
+        updated_task = await maintenance_task_service.update_task(
+            task_id,
+            {"checklist_completed": checklist}
+        )
+
+        return {
+            "success": True,
+            "message": "Checklist item assigned successfully",
+            "task": _serialize_task(updated_task),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error assigning checklist item %s for task %s: %s", item_id, task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error assigning checklist item %s for task %s: %s", item_id, task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to assign checklist item: {exc}")
+
+
 @router.patch("/{task_id}/checklist/{item_id}")
 async def update_checklist_item(
     task_id: str,
@@ -437,7 +608,7 @@ async def update_checklist_item(
 ):
     """
     Update a single checklist item's completion status.
-    
+
     This is useful for toggling individual checklist items without sending the entire list.
     """
     try:
@@ -544,10 +715,20 @@ async def initialize_special_tasks(
 async def get_special_tasks(
     current_user: dict = Depends(get_current_user),
 ):
-    """Get all special maintenance tasks."""
+    """Get all special maintenance tasks assigned to the current user (for staff) or all tasks (for admin)."""
     try:
-        tasks = await special_maintenance_service.get_special_tasks()
+        # If staff, filter by their user ID; if admin, show all tasks
+        user_id = None
+        if current_user.get("role") == "staff":
+            user_id = current_user.get("uid") or current_user.get("user_id")
+            logger.info(f"Fetching special tasks for staff user_id: {user_id}")
+        else:
+            logger.info("Fetching all special tasks for admin")
+
+        tasks = await special_maintenance_service.get_special_tasks(user_id=user_id)
         serialized = [_serialize_task(task) for task in tasks]
+
+        logger.info(f"Returning {len(serialized)} special tasks for user role: {current_user.get('role')}")
 
         return {
             "success": True,

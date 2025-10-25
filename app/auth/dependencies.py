@@ -16,7 +16,6 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         )
     
     print(f"[DEBUG] Authenticated user: {user_data.get('email')} with role: {user_data.get('role')}")
-    
     return user_data
 
 def require_role(required_roles: list):
