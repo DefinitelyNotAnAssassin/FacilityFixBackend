@@ -168,7 +168,7 @@ class ConcernSlip(BaseModel):
 class JobService(BaseModel):
     id: Optional[str] = None
     concern_slip_id: str  # Links to concern_slip
-    created_by: str  # admin user_id
+    created_by: str  # admin user_id or Firebase UID of creator
     assigned_to: Optional[str] = None  # internal staff user_id
     title: str
     description: str
@@ -186,6 +186,11 @@ class JobService(BaseModel):
     completion_notes: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    # Enriched fields (computed from created_by)
+    requested_by: Optional[str] = None  # User ID (T-0001, S-0002, etc.)
+    requested_by_name: Optional[str] = None  # Full name of requester
+    requested_by_email: Optional[str] = None  # Email of requester
 class WorkOrderPermit(BaseModel):
     id: Optional[str] = None
     

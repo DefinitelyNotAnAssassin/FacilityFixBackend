@@ -16,6 +16,7 @@ class UserUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     phone_number: Optional[str] = None
+    birth_date: Optional[str] = None  # Birth date in YYYY-MM-DD format
     department: Optional[str] = None  # Legacy single department
     departments: Optional[List[str]] = None  # New: Multiple departments
     staff_department: Optional[str] = None  # Legacy single staff department
@@ -141,8 +142,7 @@ async def get_users(
 @router.get("/{user_id}")
 async def get_user(
     user_id: str,
-    current_user: dict = Depends(require_staff_or_admin)
-):
+    ):
     """Get a specific user whose user_id == {user_id} (e.g., T-0001)."""
     try:
         # 1) Try direct doc-id (in case a doc is actually named T-0001)
@@ -211,7 +211,11 @@ async def update_user(
             update_data["last_name"] = user_update.last_name
         if user_update.phone_number is not None:
             update_data["phone_number"] = user_update.phone_number
-        
+        if user_update.birth_date is not None:
+            update_data["birth_date"] = user_update.birth_date
+            # Also update birthdate field for backward compatibility
+            update_data["birthdate"] = user_update.birth_date
+
         # Handle departments - support both legacy single and new multiple
         if user_update.departments is not None:
             update_data["departments"] = user_update.departments
