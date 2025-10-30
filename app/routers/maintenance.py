@@ -188,7 +188,8 @@ def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
     data["parts_used"] = data.get("parts_used") or []
     data["tools_used"] = data.get("tools_used") or []
     data["photos"] = data.get("photos") or []
-    
+    data["inventory_request_ids"] = data.get("inventory_request_ids") or []
+
     return data
 
 

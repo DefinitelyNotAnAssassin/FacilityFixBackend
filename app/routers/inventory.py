@@ -347,12 +347,23 @@ async def create_inventory_request(
 ):
     """Create an inventory request (Staff and Admin only)"""
     try:
+        from ..services.user_id_service import user_id_service
+
         # Set the requester
         request_dict = request_data.dict(exclude_unset=True)
         request_dict["requested_by"] = current_user["uid"]
-        
+
+        # Get user profile to populate department
+        try:
+            user_profile = await user_id_service.get_user_profile(current_user["uid"])
+            if user_profile and user_profile.department:
+                request_dict["department"] = user_profile.department
+        except Exception as profile_error:
+            logger.warning(f"Could not fetch user profile for department: {str(profile_error)}")
+            # Continue without department if profile fetch fails
+
         success, request_id, error = await inventory_service.create_inventory_request(request_dict)
-        
+
         if success:
             return {
                 "success": True,
@@ -361,7 +372,7 @@ async def create_inventory_request(
             }
         else:
             raise HTTPException(status_code=400, detail=error)
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -381,14 +392,14 @@ async def get_inventory_requests(
         # Staff can only see their own requests unless they're admin
         if current_user.get("role") == "staff" and not requested_by:
             requested_by = current_user["uid"]
-        
+
         success, requests, error = await inventory_service.get_inventory_requests(
             building_id=building_id,
             status=status,
             requested_by=requested_by,
             maintenance_task_id=maintenance_task_id
         )
-        
+
         if success:
             return {
                 "success": True,
@@ -397,11 +408,34 @@ async def get_inventory_requests(
             }
         else:
             raise HTTPException(status_code=400, detail=error)
-            
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting inventory requests: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/requests/{request_id}", response_model=Dict[str, Any])
+async def get_inventory_request_by_id(
+    request_id: str = Path(..., description="Inventory request ID"),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get inventory request by ID"""
+    try:
+        success, request_data, error = await inventory_service.get_inventory_request_by_id(request_id)
+
+        if success and request_data:
+            return {
+                "success": True,
+                "data": request_data
+            }
+        else:
+            raise HTTPException(status_code=404, detail=error or "Request not found")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting inventory request {request_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/requests/{request_id}/approve", response_model=Dict[str, Any])
@@ -654,7 +688,7 @@ async def get_requests_by_maintenance_task(
     """Get all inventory requests linked to a specific maintenance task"""
     try:
         success, requests, error = await inventory_service.get_requests_by_maintenance_task(task_id)
-        
+
         if success:
             return {
                 "success": True,
@@ -664,11 +698,86 @@ async def get_requests_by_maintenance_task(
             }
         else:
             raise HTTPException(status_code=400, detail=error)
-            
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting inventory requests for maintenance task {task_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/my-maintenance-requests", response_model=Dict[str, Any])
+async def get_my_maintenance_inventory_requests(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get all inventory requests from maintenance tasks assigned to current user"""
+    try:
+        from ..services.maintenance_task_service import maintenance_task_service
+        from ..services.user_id_service import user_id_service
+
+        user_id = current_user.get("uid")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found")
+
+        # Get user profile to get full name
+        user_profile = await user_id_service.get_user_profile(user_id)
+
+        # Get all maintenance tasks assigned to this user
+        all_tasks = await maintenance_task_service.list_tasks({})
+        assigned_tasks = []
+
+        for task in all_tasks:
+            # Check if whole task is assigned to user
+            if task.assigned_to == f"{user_profile.first_name} {user_profile.last_name}" or task.assigned_to == user_id:
+                assigned_tasks.append(task)
+                continue
+
+            # Check if any checklist item is assigned to user
+            checklist = task.checklist_completed or []
+            has_assigned_item = any(
+                item.get("assigned_to") == user_profile.staff_id
+                for item in checklist
+            )
+
+            if has_assigned_item:
+                assigned_tasks.append(task)
+
+        # Collect all inventory request IDs from assigned tasks
+        all_request_ids = []
+        for task in assigned_tasks:
+            if task.inventory_request_ids:
+                all_request_ids.extend(task.inventory_request_ids)
+
+        # Fetch all inventory requests
+        if not all_request_ids:
+            return {
+                "success": True,
+                "data": [],
+                "count": 0
+            }
+
+        # Get all requests matching these IDs
+        success, all_requests, error = await inventory_service.get_inventory_requests()
+
+        if not success:
+            raise HTTPException(status_code=400, detail=error)
+
+        # Filter to only include requests in our ID list
+        filtered_requests = [
+            req for req in all_requests
+            if req.get('_doc_id') in all_request_ids or req.get('id') in all_request_ids
+        ]
+
+        return {
+            "success": True,
+            "data": filtered_requests,
+            "count": len(filtered_requests)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting maintenance inventory requests for user: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 # ═══════════════════════════════════════════════════════════════════════════
