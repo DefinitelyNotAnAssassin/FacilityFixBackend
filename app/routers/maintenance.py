@@ -70,6 +70,9 @@ class MaintenanceTaskCreate(BaseModel):
     service_window_end: Optional[str] = None
     service_date_actual: Optional[str] = None
 
+    # Inventory request tracking
+    inventory_request_ids: Optional[List[str]] = []
+
 
 class MaintenanceTaskUpdate(BaseModel):
     task_title: Optional[str] = None
@@ -115,6 +118,9 @@ class MaintenanceTaskUpdate(BaseModel):
     service_date_actual: Optional[str] = None
     assessment_notes: Optional[str] = None
     recommendations: Optional[str] = None
+
+    # Inventory request tracking
+    inventory_request_ids: Optional[List[str]] = None
 
 
 def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:

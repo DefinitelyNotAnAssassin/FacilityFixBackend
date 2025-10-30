@@ -244,35 +244,36 @@ class MaintenanceTask(BaseModel):
     equipment_id: Optional[str] = None
     building_id: str
     assigned_to: Optional[str] = None  # user_id or staff name
-    
+
     # Task details
     task_title: str
     task_description: str
     location: str
     category: str = Field(default="preventive")  # preventive, corrective, emergency
     priority: str = Field(default="medium")  # low, medium, high, critical
-    
+
     # Scheduling information
     task_type: str = Field(default="scheduled")  # scheduled, recurring, on_demand, internal, external
     maintenance_type: Optional[str] = None  # internal, external, ipm, epm
     scheduled_date: datetime
     scheduled_time_slot: Optional[str] = None  # "09:00-12:00"
     estimated_duration: Optional[int] = None  # in minutes
-    
+
     # Execution tracking
     status: str = Field(default="scheduled")  # scheduled, assigned, in_progress, completed, cancelled, overdue
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     actual_duration: Optional[int] = None  # in minutes
-    
+
     # Recurrence handling
     recurrence_type: str = Field(default="none")  # none, daily, weekly, monthly, quarterly, yearly, custom
     parent_task_id: Optional[str] = None  # for recurring tasks
     next_occurrence: Optional[datetime] = None
-    
+
     # Resource tracking
     parts_used: Optional[List[dict]] = []  # [{"inventory_id": "...", "quantity": 2}]
     tools_used: Optional[List[str]] = []
+    inventory_request_ids: Optional[List[str]] = []  # IDs of linked inventory requests
     
     # Documentation
     completion_notes: Optional[str] = None
