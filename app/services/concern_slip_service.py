@@ -154,6 +154,10 @@ class ConcernSlipService:
                 
             else: 
                 continue
+                
+
+        slips.sort(key=lambda slip: slip.created_at, reverse=True)
+        
         
         return slips
 
@@ -374,54 +378,54 @@ class ConcernSlipService:
         concern_slip_id: str,
         assessed_by: str,
         assessment: str,
-        recommendation: str,
         resolution_type: str,
         attachments: List[str] = []
     ) -> ConcernSlip:
-        """Staff submits assessment and recommendation"""
+        """
+        Staff submits assessment with resolution type.
+        Status will be set to 'sent' and the concern slip will be ready for job service or work order creation.
+        """
         concern = await self.get_concern_slip(concern_slip_id)
         (success, staff_id, error) = await database_service.get_document("users", assessed_by)
-
-
-
-
+        
         if not concern:
             raise ValueError("Concern slip not found")
-
+        
         if concern.status != "assigned":
             raise ValueError(f"Cannot submit assessment for concern slip with status: {concern.status}")
-
+        
         if concern.assigned_to != staff_id.get('staff_id'):
             raise ValueError("Only the assigned staff member can submit assessment")
-
-        # Validate resolution type
+        
+        # Validate resolution_type
         if resolution_type not in ["job_service", "work_order"]:
             raise ValueError(f"Invalid resolution type: {resolution_type}. Must be 'job_service' or 'work_order'")
-
+        
         update_data = {
             "staff_assessment": assessment,
-            "staff_recommendation": recommendation,
             "assessment_attachments": attachments,
             "assessed_by": staff_id.get('staff_id'),
             "assessed_at": datetime.utcnow(),
             "resolution_type": resolution_type,
-            "status": "sent",
+            "resolution_set_by": staff_id.get('staff_id'),
+            "resolution_set_at": datetime.utcnow(),
+            "status": "sent",  # Always set to 'sent' since resolution type is always provided
             "updated_at": datetime.utcnow()
         }
-
+        
         success, error = await self.db.update_document("concern_slips", concern_slip_id, update_data)
         if not success:
             raise Exception(f"Failed to submit assessment: {error}")
-
+        
         # Send notification to admins about completed assessment
         await self.notification_manager.notify_concern_slip_assessed(
             concern_slip_id=concern_slip_id,
             title=concern.title,
             staff_id=staff_id.get('staff_id'),
             assessment=assessment,
-            recommendation=recommendation
+            resolution_type=resolution_type
         )
-
+        
         return await self.get_concern_slip(concern_slip_id)
 
     async def set_resolution_type(

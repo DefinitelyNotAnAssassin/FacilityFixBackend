@@ -36,8 +36,7 @@ class AssignStaffRequest(BaseModel):
 
 class SubmitAssessmentRequest(BaseModel):
     assessment: str
-    recommendation: str
-    resolution_type: str  # work_order or job_service
+    resolution_type: str  # job_service, work_order - Required
     attachments: Optional[List[str]] = []
 
 class SetResolutionTypeRequest(BaseModel):
@@ -77,10 +76,13 @@ async def submit_concern_slip(
     The system automatically processes the description with AI for translation and categorization.
     """
     try:
+        
+        
         service = ConcernSlipService()
         concern_slip = await service.create_concern_slip(
             reported_by=current_user["uid"],
-            concern_data=request.dict()
+            concern_data=request.dict(),
+            
         )
         return concern_slip
 
@@ -278,19 +280,16 @@ async def submit_staff_assessment(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Submit assessment and recommendation for a concern slip (Staff only).
-    This is step 3 of the workflow after staff inspects the issue.
+    Submit assessment with resolution type for a concern slip (Staff only).
+    Required fields: assessment, resolution_type, attachments (optional)
+    Status will be set to 'sent' and resolution type will be recorded.
     """
     try:
-
-
-
         service = ConcernSlipService()
         concern_slip = await service.submit_staff_assessment(
             concern_slip_id=concern_slip_id,
             assessed_by=current_user["uid"],
             assessment=request.assessment,
-            recommendation=request.recommendation,
             resolution_type=request.resolution_type,
             attachments=request.attachments
         )

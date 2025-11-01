@@ -1465,19 +1465,22 @@ class NotificationManager:
         title: str,
         staff_id: str,
         assessment: str,
-        recommendation: str
+        resolution_type: str
     ):
         """Notify admins when staff completes assessment of concern slip"""
         try:
             # Get admin users
             admin_ids = await self._get_admin_user_ids()
             
+            # Format resolution type for display
+            resolution_display = "Job Service" if resolution_type == "job_service" else "Work Order Permit"
+            
             for admin_id in admin_ids:
                 await self.create_notification(
                     notification_type=NotificationType.CONCERN_SLIP_ASSESSED,
                     recipient_id=admin_id,
                     title="Concern Slip Assessment Completed",
-                    message=f"Staff assessment completed for '{title}'. Recommendation: {recommendation[:100]}{'...' if len(recommendation) > 100 else ''}",
+                    message=f"Staff assessment completed for '{title}'. Resolution: {resolution_display}. {assessment[:100]}{'...' if len(assessment) > 100 else ''}",
                     related_entity_type="concern_slip",
                     related_entity_id=concern_slip_id,
                     priority=NotificationPriority.HIGH,
@@ -1486,7 +1489,7 @@ class NotificationManager:
                         "concern_slip_id": concern_slip_id,
                         "assessed_by": staff_id,
                         "assessment": assessment,
-                        "recommendation": recommendation,
+                        "resolution_type": resolution_type,
                         "title": title,
                         "requires_admin_action": True
                     },

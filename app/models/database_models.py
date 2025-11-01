@@ -58,6 +58,7 @@ class Inventory(BaseModel):
     description: Optional[str] = None
     is_critical: bool = Field(default=False)
     is_active: bool = Field(default=True)
+    recommended_on: List[str] = Field(default_factory=list)  # Locations where this item is recommended
     last_restocked_date: Optional[datetime] = None
     expiry_date: Optional[datetime] = None
     date_added: Optional[datetime] = None
