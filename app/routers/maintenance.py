@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,6 +15,75 @@ from app.services.user_id_service import user_id_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/maintenance", tags=["maintenance"])
+
+
+def _compute_next_due_date(start_date: datetime, recurrence_type: str) -> Optional[datetime]:
+    """
+    Compute the next due date based on start date and recurrence type.
+
+    Recurrence format examples:
+    - "Every 1 month"
+    - "Every 2 weeks"
+    - "Every 3 days"
+    - "Every 1 year"
+    - "none" or empty = no recurrence
+
+    Returns:
+        The next occurrence date, or None if no recurrence
+    """
+    if not recurrence_type or recurrence_type.lower() in ["none", "n/a", ""]:
+        return None
+
+    try:
+        # Parse recurrence string (e.g., "Every 1 month", "Every 2 weeks")
+        pattern = r"every\s+(\d+)\s+(day|days|week|weeks|month|months|year|years)"
+        match = re.search(pattern, recurrence_type.lower())
+
+        if not match:
+            logger.warning(f"Could not parse recurrence type: {recurrence_type}")
+            return None
+
+        amount = int(match.group(1))
+        unit = match.group(2)
+
+        # Normalize unit to singular
+        if unit.endswith('s'):
+            unit = unit[:-1]
+
+        # Calculate next occurrence
+        if unit == "day":
+            return start_date + timedelta(days=amount)
+        elif unit == "week":
+            return start_date + timedelta(weeks=amount)
+        elif unit == "month":
+            # Add months by incrementing month field
+            month = start_date.month + amount
+            year = start_date.year
+            while month > 12:
+                month -= 12
+                year += 1
+            # Handle day overflow (e.g., Jan 31 + 1 month = Feb 28/29)
+            try:
+                return start_date.replace(year=year, month=month)
+            except ValueError:
+                # Day doesn't exist in target month, use last day of month
+                if month == 2:
+                    # February - check for leap year
+                    day = 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28
+                elif month in [4, 6, 9, 11]:
+                    day = 30
+                else:
+                    day = 31
+                return start_date.replace(year=year, month=month, day=day)
+        elif unit == "year":
+            return start_date.replace(year=start_date.year + amount)
+        else:
+            logger.warning(f"Unknown recurrence unit: {unit}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error computing next due date: {str(e)}")
+        return None
 class MaintenanceTaskCreate(BaseModel):
     building_id: str
     task_title: str
@@ -322,9 +392,23 @@ async def create_maintenance_task(
         if current_user.get("role") not in {"admin", "staff"}:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+        # Convert to dict
+        task_dict = task_data.dict(exclude_unset=True)
+
+        # Auto-compute next_occurrence (next_due_date) if recurrence and scheduled_date are provided
+        scheduled_date = task_dict.get("scheduled_date")
+        recurrence_type = task_dict.get("recurrence_type")
+
+        if scheduled_date and recurrence_type:
+            next_due = _compute_next_due_date(scheduled_date, recurrence_type)
+            if next_due:
+                task_dict["next_occurrence"] = next_due
+                task_dict["next_due_date"] = next_due.strftime("%Y-%m-%d")
+                logger.info(f"Auto-computed next_occurrence: {next_due} from recurrence: {recurrence_type}")
+
         task = await maintenance_task_service.create_task(
             current_user.get("uid"),
-            task_data.dict(exclude_unset=True),
+            task_dict,
         )
 
         return {
@@ -354,9 +438,35 @@ async def update_maintenance_task(
         if current_user.get("role") not in {"admin", "staff"}:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+        # Convert to dict
+        update_dict = updates.dict(exclude_unset=True)
+
+        # Auto-compute next_occurrence if recurrence_type or scheduled_date is being updated
+        if "recurrence_type" in update_dict or "scheduled_date" in update_dict:
+            # Get current task to access existing values
+            current_task = await maintenance_task_service.get_task(task_id)
+            if not current_task:
+                raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+            # Use updated values if provided, otherwise use existing values
+            scheduled_date = update_dict.get("scheduled_date") or current_task.scheduled_date
+            recurrence_type = update_dict.get("recurrence_type") or current_task.recurrence_type
+
+            if scheduled_date and recurrence_type:
+                next_due = _compute_next_due_date(scheduled_date, recurrence_type)
+                if next_due:
+                    update_dict["next_occurrence"] = next_due
+                    update_dict["next_due_date"] = next_due.strftime("%Y-%m-%d")
+                    logger.info(f"Auto-computed next_occurrence: {next_due} for task {task_id} from recurrence: {recurrence_type}")
+                else:
+                    # No recurrence or could not parse, clear next_occurrence
+                    update_dict["next_occurrence"] = None
+                    update_dict["next_due_date"] = None
+                    logger.info(f"Cleared next_occurrence for task {task_id} (no recurrence)")
+
         updated = await maintenance_task_service.update_task(
             task_id,
-            updates.dict(exclude_unset=True),
+            update_dict,
         )
 
         if not updated:
