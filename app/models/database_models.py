@@ -156,6 +156,7 @@ class ConcernSlip(BaseModel):
     assigned_at: Optional[datetime] = None
     staff_assessment: Optional[str] = None  # Staff's assessment text
     staff_recommendation: Optional[str] = None  # Staff's recommendation
+    staff_profile: Optional[dict] = None  # Enriched staff profile data
     assessment_attachments: Optional[List[str]] = []  # Assessment file URLs
     assessed_by: Optional[str] = None  # staff user_id who did assessment
     assessed_at: Optional[datetime] = None

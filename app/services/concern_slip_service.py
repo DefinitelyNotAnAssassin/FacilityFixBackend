@@ -149,7 +149,17 @@ class ConcernSlipService:
         
         for slip in concern_data: 
             curr = slip._data  # transform DocumentSnapshot from class to dict 
-        
+            if curr.get('status') == "completed": 
+                staff_profile = await UserIdService.get_staff_profile_from_staff_id(curr["assigned_to"])
+                if staff_profile:
+                    staff_profile = { 
+                                     "first_name": staff_profile.first_name,
+                                     "last_name": staff_profile.last_name,
+                                     "phone_number": staff_profile.phone_number,
+                                     "staff_id": staff_profile.staff_id
+                                     }
+                    
+                    curr["staff_profile"] = staff_profile
             if curr: 
                 curr["reported_by"] = await UserIdService.get_user_profile(curr["reported_by"])
                 curr["reported_by"] = curr["reported_by"].first_name + " " + curr["reported_by"].last_name if curr["reported_by"] else "Unknown"
