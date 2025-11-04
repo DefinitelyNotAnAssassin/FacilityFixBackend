@@ -452,6 +452,7 @@ class UserProfile(BaseModel):
     first_name: str
     last_name: str
     phone_number: Optional[str] = None
+    profile_image_url: Optional[str] = None
     department: Optional[str] = None  # Legacy single department (kept for backward compatibility)
     departments: Optional[List[str]] = []  # New: Multiple departments/categories
     staff_department: Optional[str] = None  # Legacy single staff department
@@ -564,5 +565,24 @@ class Notification(BaseModel):
     tags: Optional[List[str]] = []
     group_key: Optional[str] = None  # For grouping related notifications
     batch_id: Optional[str] = None  # For batch operations
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+# File Attachment model (for uploaded files metadata)
+class FileAttachment(BaseModel):
+    id: Optional[str] = None
+    file_path: str
+    original_filename: str
+    file_size: int
+    content_type: str
+    entity_type: str
+    entity_id: str
+    uploaded_by: str
+    file_type: Optional[str] = None  # image, document, any
+    description: Optional[str] = None
+    storage_url: Optional[str] = None
+    public_url: Optional[str] = None
+    is_active: bool = Field(default=True)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

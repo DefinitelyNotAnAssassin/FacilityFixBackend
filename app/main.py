@@ -18,7 +18,7 @@ from app.core.config import USE_GROQ, GROQ_MODEL, GROQ_API_KEY
 from app.core.config import settings, assert_groq_ready
 from app.services.groq_translate import translate_one
 from app.core.firebase_init import initialize_firebase, get_firebase_status
-
+from app.services.firebase_storage_init import get_bucket_info, is_storage_available
 
 # ---------- OPTIONAL ML/TRANSFORMERS IMPORTS (wrapped in try/except) ----------
 # These imports will be attempted at startup. If you don't want models to load on import,
@@ -47,6 +47,13 @@ if not firebase_status['available']:
         print("✅ Firebase initialized successfully")
     else:
         print("⚠️ Firebase initialization failed - app will run without Firebase features")
+
+print("\n📦 Initializing Firebase Storage...")
+storage_info = get_bucket_info()
+if storage_info['available']:
+    print(f"✅ Storage initialized: {storage_info['bucket_path']}")
+else:
+    print(f"⚠️ Storage initialization failed: {storage_info.get('error', 'Unknown error')}")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -119,6 +126,8 @@ routers_to_load = [
     ("app.routers.admin_dashboard", "Admin Dashboard"), 
     ("app.routers.maintenance", "Maintenance"),
     ("app.routers.chat", "Chat"),
+    ("app.routers.attachments", "Attachments"),
+    # ("app.routers.attachments", "Attachments"), # Deprecated in favor of file_storage
 ]
 
 successful_routers = []
@@ -137,9 +146,11 @@ if failed_routers:
 @app.get("/")
 async def root():
     firebase_status = get_firebase_status()
+    storage_info = get_bucket_info()
     return {
         "message": "Welcome to the FacilityFix API",
         "firebase_status": firebase_status,
+        "storage_status": storage_info,
         "loaded_routers": successful_routers,
         "failed_routers": failed_routers
     }
@@ -147,9 +158,11 @@ async def root():
 @app.get("/health")
 async def health_check():
     firebase_status = get_firebase_status()
+    storage_info = get_bucket_info()
     return {
         "status": "healthy",
         "firebase_available": firebase_status['available'],
+        "storage_available": storage_info['available'],
         "loaded_routers": len(successful_routers),
         "failed_routers": len(failed_routers)
     }

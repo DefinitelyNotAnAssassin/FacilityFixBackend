@@ -1,5 +1,5 @@
 import firebase_admin
-from firebase_admin import credentials
+from firebase_admin import credentials, storage
 import os
 from typing import Optional
 
@@ -24,12 +24,14 @@ def initialize_firebase() -> bool:
             return False
         
         cred = credentials.Certificate(service_account_path)
+        # Ensure the storage bucket default matches the Firebase client config
         firebase_admin.initialize_app(cred, {
-            'projectId': os.getenv('FIREBASE_PROJECT_ID', 'facilityfix-6d27a')
+            'projectId': os.getenv('FIREBASE_PROJECT_ID', 'facilityfix-6d27a'),
+            'storageBucket': os.getenv('FIREBASE_STORAGE_BUCKET', 'facilityfix-6d27a.firebasestorage.app')
         })
         
         _firebase_initialized = True
-        print("✅ Firebase initialized successfully")
+        print("✅ Firebase Admin SDK initialized successfully")
         return True
         
     except Exception as e:

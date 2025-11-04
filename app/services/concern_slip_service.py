@@ -6,6 +6,8 @@ from app.database.collections import COLLECTIONS
 from app.services.ai_integration_service import AIIntegrationService
 from app.services.concern_slip_id_service import concern_slip_id_service
 from app.services.notification_manager import NotificationManager
+from app.services.file_storage_service import file_storage_service
+from fastapi import UploadFile
 import uuid
 import logging
 from firebase_admin import credentials, firestore
@@ -119,9 +121,6 @@ class ConcernSlipService:
         
         return ConcernSlip(**concern_data)
 
-
-
-
     async def get_concern_slip_by_formatted_id(self, concern_slip_id: str) -> Optional[ConcernSlip]:
         """Get concern slip by ID"""
         
@@ -131,32 +130,24 @@ class ConcernSlipService:
         concern_data = results[0]
         return ConcernSlip(**concern_data)
 
-
-
-
-
-    async def get_all_concern_slips(self, isStaff = False, current_user = {}) -> Optional[ConcernSlip]:
+    async def get_all_concern_slips(self, isStaff=False, current_user={}) -> Optional[ConcernSlip]:
         """Get all concern slips"""
         db = firestore.client()
         concern_data = db.collection("concern_slips")
-        concern_data = concern_data.stream() 
+        concern_data = concern_data.stream()
         
+        slips = []
         
-        
-        slips = [] 
-        
-        for slip in concern_data: 
-            curr = slip._data  # transform DocumentSnapshot from class to dict 
-            curr = ConcernSlip(**curr) # feed to the model
-        
-            if curr: 
+        for slip in concern_data:
+            curr = slip._data  # transform DocumentSnapshot from class to dict
+            curr = ConcernSlip(**curr)  # feed to the model
+            
+            if curr:
                 slips.append(curr)
-                
-            else: 
+            else:
                 continue
         
         return slips
-
 
     async def get_ai_processing_history(self, concern_slip_id: str) -> Optional[dict]:
         """Get AI processing history for a concern slip"""
@@ -241,7 +232,6 @@ class ConcernSlipService:
         
         return [ConcernSlip(**concern) for concern in concerns]
 
-  
     async def evaluate_concern_slip(
         self,
         concern_slip_id: str,
@@ -379,10 +369,7 @@ class ConcernSlipService:
     ) -> ConcernSlip:
         """Staff submits assessment and recommendation"""
         concern = await self.get_concern_slip(concern_slip_id)
-        (success, staff_id, error) = await database_service.get_document("users", assessed_by)
-        
-        
-        
+        success, staff_id, error = await database_service.get_document("users", assessed_by)
         
         if not concern:
             raise ValueError("Concern slip not found")
@@ -425,7 +412,7 @@ class ConcernSlipService:
         admin_user_id: str,
         admin_notes: Optional[str] = None
     ) -> ConcernSlip:
-        """Admin sets resolution type  assessed concern slip (job_service or work_order)"""
+        """Admin sets resolution type for assessed concern slip (job_service or work_order)"""
         concern = await self.get_concern_slip_by_formatted_id(concern_slip_id)
         if not concern:
             raise ValueError("Concern slip not found")
@@ -504,16 +491,7 @@ class ConcernSlipService:
 
     async def get_concern_slips_by_staff(self, user_id) -> List[ConcernSlip]:
         """Get all concern slips assigned to a staff member"""
-        
-        
-        (success,current_user,error) = await database_service.get_document("users", user_id)
-        print(current_user)
-        
-        
-        
-        
-        
-        
+        success, current_user, error = await database_service.get_document("users", user_id)
         staff_id = current_user.get('staff_id')
         
         success, concerns, error = await self.db.query_documents(
@@ -561,3 +539,116 @@ class ConcernSlipService:
         if not success or not updated_concern:
             raise ValueError("Failed to retrieve updated concern slip")
         return ConcernSlip(**updated_concern)
+
+    async def upload_attachment(
+        self,
+        concern_slip_id: str,
+        file: UploadFile,
+        uploaded_by: str
+    ) -> dict:
+        """Upload an attachment to a concern slip"""
+        try:
+            # Upload file to Firebase Storage
+            file_metadata = await file_storage_service.upload_file(
+                file=file,
+                entity_type="concern_slips",
+                entity_id=concern_slip_id,
+                uploaded_by=uploaded_by,
+                file_type="any",
+                description=f"Attachment for concern slip {concern_slip_id}"
+            )
+            
+            # Update concern slip with new attachment reference
+            concern = await self.get_concern_slip(concern_slip_id)
+            if concern:
+                current_attachments = concern.attachments or []
+                current_attachments.append(file_metadata['id'])
+                
+                await self.db.update_document(
+                    "concern_slips",
+                    concern_slip_id,
+                    {
+                        "attachments": current_attachments,
+                        "updated_at": datetime.utcnow()
+                    }
+                )
+            
+            logger.info(f"✅ Attachment uploaded for concern slip {concern_slip_id}")
+            return file_metadata
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to upload attachment: {str(e)}")
+            raise Exception(f"Failed to upload attachment: {str(e)}")
+    
+    async def list_attachments(
+        self,
+        concern_slip_id: str,
+        user_id: str
+    ) -> List[dict]:
+        """List all attachments for a concern slip"""
+        try:
+            attachments = await file_storage_service.list_files(
+                entity_type="concern_slips",
+                entity_id=concern_slip_id,
+                user_id=user_id
+            )
+            return attachments
+        except Exception as e:
+            logger.error(f"❌ Failed to list attachments: {str(e)}")
+            raise Exception(f"Failed to list attachments: {str(e)}")
+    
+    async def get_attachment_url(
+        self,
+        concern_slip_id: str,
+        file_id: str,
+        user_id: str
+    ) -> str:
+        """Get signed URL for an attachment"""
+        try:
+            signed_url = await file_storage_service.get_file_url(
+                file_id=file_id,
+                user_id=user_id,
+                expiration_hours=24
+            )
+            return signed_url
+        except Exception as e:
+            logger.error(f"❌ Failed to get attachment URL: {str(e)}")
+            raise Exception(f"Failed to get attachment URL: {str(e)}")
+    
+    async def delete_attachment(
+        self,
+        concern_slip_id: str,
+        file_id: str,
+        user_id: str
+    ) -> bool:
+        """Delete an attachment from a concern slip"""
+        try:
+            # Delete file from storage
+            success = await file_storage_service.delete_file(
+                file_id=file_id,
+                user_id=user_id
+            )
+            
+            if success:
+                # Remove attachment reference from concern slip
+                concern = await self.get_concern_slip(concern_slip_id)
+                if concern:
+                    current_attachments = concern.attachments or []
+                    if file_id in current_attachments:
+                        current_attachments.remove(file_id)
+                        
+                        await self.db.update_document(
+                            "concern_slips",
+                            concern_slip_id,
+                            {
+                                "attachments": current_attachments,
+                                "updated_at": datetime.utcnow()
+                            }
+                        )
+            
+            logger.info(f"✅ Attachment deleted from concern slip {concern_slip_id}")
+            return success
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to delete attachment: {str(e)}")
+            raise Exception(f"Failed to delete attachment: {str(e)}")

@@ -3,6 +3,12 @@ from datetime import datetime, timedelta
 from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
 from ..auth.firebase_auth import firebase_auth
+from ..services.file_storage_service import file_storage_service
+from fastapi import UploadFile
+import logging
+
+# Module logger
+logger = logging.getLogger(__name__)
 import re
 
 class ProfileService:
@@ -286,6 +292,253 @@ class ProfileService:
             
         except Exception as e:
             return False, None, f"Error exporting user data: {str(e)}"
+
+    async def _upload_files_to_storage(
+        self, 
+        files: List[UploadFile], 
+        user_id: str, 
+        updated_by: str,
+        entity_type: str = "user_profiles",
+        file_type: str = "image",
+        description: str = ""
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """
+        Upload multiple files to Firebase Storage.
+        
+        Args:
+            files: List of files to upload
+            user_id: The user ID the files belong to
+            updated_by: User ID of who's uploading
+            entity_type: Type of entity (e.g., user_profiles, documents)
+            file_type: Type of file (image, document)
+            description: Description of the files
+            
+        Returns:
+            Tuple of (successful uploads metadata, failed uploads paths)
+        """
+        uploaded_files = []
+        failed_uploads = []
+        
+        for file in files:
+            try:
+                file_metadata = await file_storage_service.upload_file(
+                    file=file,
+                    entity_type=entity_type,
+                    entity_id=user_id,
+                    uploaded_by=updated_by,
+                    file_type=file_type,
+                    description=description
+                )
+                if file_metadata and file_metadata.get('public_url'):
+                    uploaded_files.append(file_metadata)
+                else:
+                    failed_uploads.append(file.filename)
+            except Exception as e:
+                logger.error(f"❌ Failed to upload file {file.filename}: {str(e)}")
+                failed_uploads.append(file.filename)
+                
+        return uploaded_files, failed_uploads
+
+    async def update_profile_image(self, user_id: str, file: UploadFile, updated_by: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Upload a new profile image, delete the old one, and update the user profile.
+        
+        Args:
+            user_id: The user whose profile image is being updated
+            file: The image file to upload
+            updated_by: User ID of who's making the update
+            
+        Returns:
+            Tuple of (success, new_image_url, error_message)
+        """
+        try:
+            # 1. Get user profile to find the old image metadata
+            success, profile, error = await self.get_complete_profile(user_id)
+            if not success:
+                return False, None, f"User profile not found: {error}"
+
+            # 2. Upload the new file to Firebase Storage
+            uploaded_files, failed_uploads = await self._upload_files_to_storage(
+                files=[file],
+                user_id=user_id,
+                updated_by=updated_by,
+                description="Profile picture"
+            )
+            
+            if not uploaded_files:
+                return False, None, f"Failed to upload image: {', '.join(failed_uploads)}"
+
+            file_metadata = uploaded_files[0]  # We only uploaded one file
+            new_image_url = file_metadata['public_url']
+            storage_path = file_metadata['file_path']  # Internal storage path
+
+            # 3. Update the user's profile with the new image URL and file reference
+            update_data = {
+                "profile_image_url": new_image_url,  # Public URL for frontend
+                "profile_image_path": storage_path,  # Internal path for reference
+                "profile_image_file_id": file_metadata['id'],  # File metadata ID
+                "updated_at": datetime.now()
+            }
+            
+            success, error = await self.db.update_document(COLLECTIONS['users'], user_id, update_data)
+            if not success:
+                # Attempt to delete the newly uploaded file if profile update fails
+                await file_storage_service.delete_file(file_metadata['id'], updated_by)
+                return False, None, f"Failed to update profile with new image URL: {error}"
+
+            # 4. Delete the old profile image if it exists (but don't fail if deletion fails)
+            # This is now a background cleanup task that won't affect the profile update
+            old_file_id = profile.get("profile_image_file_id")
+            if old_file_id and old_file_id != file_metadata['id']:  # Only delete if there's a different old image
+                try:
+                    # Skip deletion if it's the same file being uploaded
+                    # The deletion is not critical for the profile update to succeed
+                    await file_storage_service.delete_file(old_file_id, updated_by)
+                    logger.info(f"✅ Old profile image deleted: {old_file_id}")
+                except Exception as delete_error:
+                    # Just log the error but don't fail the profile update
+                    logger.info(f"ℹ️ Old profile image will be cleaned up later: {delete_error}")
+
+            logger.info(f"✅ Profile image updated for user {user_id}")
+            return True, new_image_url, None
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating profile image: {str(e)}")
+            return False, None, f"Error updating profile image: {str(e)}"
+
+    async def upload_profile_document(
+        self, 
+        user_id: str, 
+        file: UploadFile, 
+        document_type: str,
+        uploaded_by: str
+    ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Upload a document to a user's profile.
+        
+        Args:
+            user_id: The user whose profile is being updated
+            file: The document file to upload
+            document_type: Type of document (e.g., id, contract, certification)
+            uploaded_by: User ID of who's making the upload
+            
+        Returns:
+            Tuple of (success, file_metadata, error_message)
+        """
+        try:
+            # 1. Upload the file to Firebase Storage
+            uploaded_files, failed_uploads = await self._upload_files_to_storage(
+                files=[file],
+                user_id=user_id,
+                updated_by=uploaded_by,
+                entity_type="user_profiles",
+                file_type="document",
+                description=f"User document - {document_type}"
+            )
+            
+            if not uploaded_files:
+                return False, None, f"Failed to upload document: {', '.join(failed_uploads)}"
+
+            file_metadata = uploaded_files[0]  # We only uploaded one file
+            storage_path = file_metadata['file_path']  # Internal storage path
+
+            # 2. Update the document metadata with additional profile-specific info
+            doc_ref = file_metadata.get('id')
+            if doc_ref:
+                await database_service.update_document('file_attachments', doc_ref, {
+                    'document_type': document_type,
+                    'user_id': user_id,
+                    'storage_path': storage_path,  # Store internal path for reference
+                    'document_metadata': {
+                        'type': document_type,
+                        'upload_date': datetime.now().isoformat(),
+                        'uploader': uploaded_by,
+                        'file_name': file.filename
+                    }
+                })
+
+            # 3. Update user's profile with reference to the document
+            await database_service.update_document(COLLECTIONS['users'], user_id, {
+                f"documents.{document_type}": {
+                    'file_id': doc_ref,
+                    'storage_path': storage_path,
+                    'uploaded_at': datetime.now(),
+                    'status': 'active'
+                }
+            })
+
+            return True, file_metadata, None
+            
+        except Exception as e:
+            logger.error(f"❌ Error uploading profile document: {str(e)}")
+            return False, None, f"Error uploading profile document: {str(e)}"
+
+    async def list_profile_documents(
+        self, 
+        user_id: str
+    ) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
+        """
+        List all documents attached to a user's profile.
+        
+        Args:
+            user_id: The user whose documents to list
+            
+        Returns:
+            Tuple of (success, documents_list, error_message)
+        """
+        try:
+            # Get user's documents from file_attachments collection
+            success, documents = await file_storage_service.list_files(
+                entity_type="user_profiles",
+                entity_id=user_id,
+                user_id=user_id
+            )
+
+            return True, documents, None
+            
+        except Exception as e:
+            logger.error(f"❌ Error listing profile documents: {str(e)}")
+            return False, [], f"Error listing profile documents: {str(e)}"
+
+    async def delete_profile_document(
+        self, 
+        user_id: str, 
+        document_id: str,
+        deleted_by: str
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Delete a document from a user's profile.
+        
+        Args:
+            user_id: The user whose document is being deleted
+            document_id: The ID of the document to delete
+            deleted_by: User ID of who's making the deletion
+            
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            # Verify the document belongs to the user
+            db = self.db.get_client()
+            doc = db.collection('file_attachments').document(document_id).get()
+            
+            if not doc.exists:
+                return False, "Document not found"
+                
+            doc_data = doc.to_dict()
+            if doc_data.get('entity_id') != user_id:
+                return False, "Document does not belong to this user"
+
+            # Delete the document
+            success = await file_storage_service.delete_file(document_id, deleted_by)
+            if not success:
+                return False, "Failed to delete document"
+
+            return True, None
+            
+        except Exception as e:
+            logger.error(f"❌ Error deleting profile document: {str(e)}")
+            return False, f"Error deleting profile document: {str(e)}"
 
 # Create global service instance
 profile_service = ProfileService()

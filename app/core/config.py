@@ -6,6 +6,8 @@ load_dotenv()
 
 class Settings:
     FIREBASE_PROJECT_ID: str = os.getenv("FIREBASE_PROJECT_ID", "facilityfix-6d27a")
+    # Use the same default bucket name format used in the app's Firebase client
+    FIREBASE_STORAGE_BUCKET: str = os.getenv("FIREBASE_STORAGE_BUCKET", "facilityfix-6d27a.firebasestorage.app")
     FIREBASE_WEB_API_KEY: str = os.getenv(
         "FIREBASE_WEB_API_KEY",
         "AIzaSyBe1P1076wLTs6C6RHAAo-pEernmDxUdWM",

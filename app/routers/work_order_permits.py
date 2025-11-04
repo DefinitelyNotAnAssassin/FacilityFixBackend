@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -374,3 +374,101 @@ async def get_all_permits(
         return permits
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get permits: {str(e)}")
+
+# File attachment endpoints for work order permits
+@router.post("/{permit_id}/attachments")
+async def upload_work_order_attachment(
+    permit_id: str,
+    current_user: dict = Depends(get_current_user),
+    file: UploadFile = File(...)
+):
+    """
+    Upload an attachment to a work order permit.
+    - Tenants can attach files to their own permits
+    - Admin can attach files to any permit
+    """
+    try:
+        service = WorkOrderPermitService()
+        file_metadata = await service.upload_attachment(
+            permit_id=permit_id,
+            file=file,
+            uploaded_by=current_user.get("uid")
+        )
+        
+        return {
+            "message": "File uploaded successfully",
+            "attachment_id": file_metadata.get('id'),
+            "file_url": file_metadata.get('public_url')
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
+
+@router.get("/{permit_id}/attachments")
+async def list_work_order_attachments(
+    permit_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """List all attachments for a work order permit"""
+    try:
+        service = WorkOrderPermitService()
+        attachments = await service.list_attachments(
+            permit_id=permit_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {
+            "permit_id": permit_id,
+            "attachments": attachments
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list attachments: {str(e)}")
+
+@router.get("/{permit_id}/attachments/{file_id}")
+async def get_work_order_attachment_url(
+    permit_id: str,
+    file_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get a signed URL for accessing a specific attachment"""
+    try:
+        service = WorkOrderPermitService()
+        signed_url = await service.get_attachment_url(
+            permit_id=permit_id,
+            file_id=file_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {"url": signed_url}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get attachment URL: {str(e)}")
+
+@router.delete("/{permit_id}/attachments/{file_id}")
+async def delete_work_order_attachment(
+    permit_id: str,
+    file_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a specific attachment from a work order permit"""
+    try:
+        service = WorkOrderPermitService()
+        success = await service.delete_attachment(
+            permit_id=permit_id,
+            file_id=file_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {"message": "Attachment deleted successfully"}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {str(e)}")

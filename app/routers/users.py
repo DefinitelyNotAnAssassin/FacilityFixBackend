@@ -141,16 +141,22 @@ async def get_users(
 @router.get("/{user_id}")
 async def get_user(
     user_id: str,
-    current_user: dict = Depends(require_staff_or_admin)
+    current_user: dict = Depends(get_current_user)  # Allow any authenticated user
 ):
-    """Get a specific user whose user_id == {user_id} (e.g., T-0001)."""
+    """
+    Get a specific user whose user_id == {user_id} (e.g., T-0001).
+    Tenants can only access their own data. Staff and admin can access any user.
+    """
     try:
-        # 1) Try direct doc-id (in case a doc is actually named T-0001)
+        current_user_id = current_user.get('uid')
+        current_user_role = current_user.get('role', '').lower()
+        
+        # Get the user data first
         success, user_data, error = await database_service.get_document(
             COLLECTIONS["users"], user_id
         )
 
-        # 2) If not found by doc-id, query by the "user_id" field
+        # If not found by doc-id, query by the "user_id" field
         if not success or not user_data:
             q_success, docs, q_error = await database_service.query_documents(
                 COLLECTIONS["users"],
@@ -163,9 +169,24 @@ async def get_user(
                     detail=f"User not found: Document '{user_id}' or field user_id == '{user_id}' not found in 'users'"
                 )
             user_data = docs[0]
-
-        # (Optional) include Firestore doc id if your wrapper returns it
-        # user_data.setdefault("_doc_id", user_data.get("_doc_id"))
+        
+        target_firebase_uid = user_data.get('id')  # Firebase UID stored in 'id' field
+        
+        if current_user_role == 'tenant':
+            # Tenant can only access their own data
+            if current_user_id != target_firebase_uid and current_user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Tenants can only access their own user data"
+                )
+        elif current_user_role not in ['staff', 'admin']:
+            # Unknown role - deny access
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        # Staff and admin can access any user data (no additional check needed)
 
         # Attach Firebase Auth info (by email first, fallback to Firebase UID in 'id')
         try:
@@ -173,7 +194,7 @@ async def get_user(
             email = user_data.get("email")
             if email:
                 fb_user = await firebase_auth.get_user_by_email(email)
-            elif user_data.get("id"):  # your doc stores Firebase UID in 'id'
+            elif user_data.get("id"):
                 fb_user = await firebase_auth.get_user(user_data["id"])
 
             if fb_user:

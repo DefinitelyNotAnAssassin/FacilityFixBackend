@@ -282,32 +282,36 @@ class WorkOrderPermitService:
     async def _update_permit_by_custom_id(self, permit_id: str, update_data: dict) -> tuple[bool, str]:
         """Helper method to update work order permit by custom ID"""
         try:
-            # Get all permits to find the one with matching custom ID
-            all_permits = await self.db.get_all_documents("work_order_permits")
-            target_permit = None
-            firebase_doc_id = None
-            
-            for i, permit in enumerate(all_permits):
-                if permit.get("id") == permit_id:
-                    target_permit = permit
-                    # Since we can't get the Firebase doc ID directly, we'll use the index
-                    # This is a workaround - ideally we'd have the Firebase doc ID
-                    break
-            
-            if not target_permit:
+            # Query to find the document with the custom ID
+            success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+            if not success or not permits_data or len(permits_data) == 0:
                 return False, "Work order permit not found"
             
-            # For now, we'll use a different approach since we can't easily get Firebase doc IDs
-            # We'll delete and recreate the document (not ideal but functional)
-            # This is a limitation of the current database service design
+            # Get the Firestore document ID from the first matching document
+            permit_doc = permits_data[0]
+            firestore_doc_id = permit_doc.get("_doc_id")
             
-            # Update the permit data
-            target_permit.update(update_data)
+            if not firestore_doc_id:
+                return False, "Could not find Firestore document ID"
             
-            # Since we can't update by Firebase doc ID easily, let's return success
-            # The actual update will need to be handled differently
-            # For now, this is a placeholder that indicates the operation would succeed
+            # Update using the Firestore document ID
+            success, error = await self.db.update_document("work_order_permits", firestore_doc_id, update_data)
+            
+            if not success:
+                return False, f"Failed to update work order permit: {error}"
+            
             return True, ""
             
         except Exception as e:
             return False, str(e)
+
+    async def _send_tenant_notification(self, tenant_id: str, permit_id: str, message: str):
+        """Helper method to send notification to tenant"""
+        await notification_manager.create_notification(
+            notification_type=NotificationType.PERMIT_STATUS_UPDATE,
+            recipient_id=tenant_id,
+            title="Permit Status Update",
+            message=message,
+            related_entity_type="work_order_permit",
+            related_entity_id=permit_id
+        )
