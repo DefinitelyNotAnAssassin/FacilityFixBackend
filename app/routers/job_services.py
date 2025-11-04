@@ -210,19 +210,20 @@ async def add_work_notes(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to add notes: {str(e)}")
 
-@router.get("/{job_service_id}", response_model=JobService)
+@router.get("/{job_service_id}", response_model=dict)
 async def get_job_service(
     job_service_id: str,
     current_user: dict = Depends(get_current_user),
     _: None = Depends(require_role(["admin", "staff", "tenant"]))
 ):
-    """Get job service by ID"""
+    """Get job service by ID with enriched user information"""
     try:
         service = JobServiceService()
         job_service = await service.get_job_service(job_service_id)
         if not job_service:
             raise HTTPException(status_code=404, detail="Job service not found")
-        return job_service
+        # Return as dict to include enriched fields
+        return job_service.model_dump() if hasattr(job_service, 'model_dump') else job_service
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get job service: {str(e)}")
 

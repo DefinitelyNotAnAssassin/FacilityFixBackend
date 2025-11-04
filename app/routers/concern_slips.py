@@ -35,6 +35,7 @@ class AssignStaffRequest(BaseModel):
 class SubmitAssessmentRequest(BaseModel):
     assessment: str
     recommendation: str
+    resolution_type: str  # work_order or job_service
     attachments: Optional[List[str]] = []
 
 class SetResolutionTypeRequest(BaseModel):
@@ -479,6 +480,7 @@ async def submit_staff_assessment(
             assessed_by=current_user["uid"],
             assessment=request.assessment,
             recommendation=request.recommendation,
+            resolution_type=request.resolution_type,
             attachments=request.attachments
         )
         return concern_slip

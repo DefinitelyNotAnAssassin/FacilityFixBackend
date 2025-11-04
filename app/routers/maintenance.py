@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from app.auth.dependencies import get_current_user
 from app.models.database_models import MaintenanceTask
 from app.services.maintenance_task_service import maintenance_task_service
+from app.services.special_maintenance_service import special_maintenance_service
+from app.services.user_id_service import user_id_service
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,9 @@ class MaintenanceTaskCreate(BaseModel):
     service_window_end: Optional[str] = None
     service_date_actual: Optional[str] = None
 
+    # Inventory request tracking
+    inventory_request_ids: Optional[List[str]] = []
+
 
 class MaintenanceTaskUpdate(BaseModel):
     task_title: Optional[str] = None
@@ -113,6 +118,9 @@ class MaintenanceTaskUpdate(BaseModel):
     service_date_actual: Optional[str] = None
     assessment_notes: Optional[str] = None
     recommendations: Optional[str] = None
+
+    # Inventory request tracking
+    inventory_request_ids: Optional[List[str]] = None
 
 
 def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
@@ -180,7 +188,8 @@ def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
     data["parts_used"] = data.get("parts_used") or []
     data["tools_used"] = data.get("tools_used") or []
     data["photos"] = data.get("photos") or []
-    
+    data["inventory_request_ids"] = data.get("inventory_request_ids") or []
+
     return data
 
 
@@ -221,6 +230,66 @@ async def get_all_maintenance_tasks(
     except Exception as exc:  # pragma: no cover
         logger.error("Error getting maintenance tasks: %s", exc)
         raise HTTPException(status_code=500, detail=f"Failed to get maintenance tasks: {exc}")
+
+
+@router.get("/assigned-to-me")
+async def get_my_assigned_tasks(
+    building_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """Get maintenance tasks assigned to the current user (whole task or checklist items)."""
+    try:
+        user_id = current_user.get("uid")
+        current_user = await user_id_service.get_user_profile(user_id)
+        print(current_user)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found")
+
+        filters: Dict[str, Any] = {}
+        if building_id:
+            filters["building_id"] = building_id
+        if status:
+            filters["status"] = status
+        if category:
+            filters["category"] = category
+
+        # Get all tasks matching the filters
+        all_tasks = await maintenance_task_service.list_tasks(filters)
+
+        # Filter to only include:
+        # 1. Tasks where assigned_to == user_id
+        # 2. Tasks with checklist items where any item.assigned_to == user_id
+        assigned_tasks = []
+        for task in all_tasks:
+            # Check if whole task is assigned to user
+            if task.assigned_to == f"{current_user.first_name} {current_user.last_name}" or task.assigned_to == user_id:
+                assigned_tasks.append(task)
+                continue
+
+            # Check if any checklist item is assigned to user
+            checklist = task.checklist_completed or []
+            has_assigned_item = any(
+                item.get("assigned_to") == current_user.staff_id
+                for item in checklist
+            )
+
+            if has_assigned_item:
+                assigned_tasks.append(task)
+
+        serialized = [_serialize_task(task) for task in assigned_tasks]
+        logger.info("[DEBUG] Returning %d assigned tasks for user %s", len(serialized), user_id)
+        return serialized
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error getting assigned tasks: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error getting assigned tasks: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to get assigned tasks: {exc}")
 
 
 @router.get("/{task_id}")
@@ -334,3 +403,424 @@ async def delete_maintenance_task(
     except Exception as exc:  # pragma: no cover
         logger.error("Unexpected error deleting maintenance task %s: %s", task_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to delete maintenance task: {exc}")
+
+
+class ChecklistItemUpdate(BaseModel):
+    """Model for updating a single checklist item."""
+    item_id: str
+    completed: bool
+    task: Optional[str] = None
+
+
+class ChecklistUpdate(BaseModel):
+    """Model for updating the entire checklist."""
+    checklist_completed: List[Dict[str, Any]]
+
+
+@router.post("/{task_id}/assign")
+async def assign_staff_to_maintenance_task(
+    task_id: str,
+    assignment_data: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Assign staff to a maintenance task."""
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        staff_id = assignment_data.get("staff_id") or assignment_data.get("assigned_to")
+        if not staff_id:
+            raise HTTPException(status_code=400, detail="staff_id is required")
+
+        # Get scheduled date if provided
+        scheduled_date = assignment_data.get("scheduled_date")
+        notes = assignment_data.get("notes")
+
+        # Build update payload
+        updates = {
+            "assigned_to": staff_id,
+            "status": "assigned",
+        }
+
+        if scheduled_date:
+            updates["scheduled_date"] = scheduled_date
+
+        if notes:
+            updates["notes"] = notes
+
+        # Update the task
+        updated_task = await maintenance_task_service.update_task(task_id, updates)
+
+        if not updated_task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        return {
+            "success": True,
+            "message": "Staff assigned successfully",
+            "task": _serialize_task(updated_task),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error assigning staff to task %s: %s", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error assigning staff to task %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to assign staff: {exc}")
+
+
+@router.patch("/{task_id}/checklist")
+async def update_maintenance_checklist(
+    task_id: str,
+    checklist_data: ChecklistUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Update the checklist for a maintenance task.
+
+    The checklist should be an array of objects with the following structure:
+    [
+        {
+            "id": "unique_item_id",
+            "task": "Task description",
+            "completed": true/false
+        }
+    ]
+    """
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Validate checklist structure
+        for item in checklist_data.checklist_completed:
+            if "id" not in item or "task" not in item or "completed" not in item:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each checklist item must have 'id', 'task', and 'completed' fields"
+                )
+            if not isinstance(item["completed"], bool):
+                raise HTTPException(
+                    status_code=400,
+                    detail="'completed' field must be a boolean"
+                )
+
+        # Determine status based on checklist completion
+        total_items = len(checklist_data.checklist_completed)
+        completed_items = sum(1 for item in checklist_data.checklist_completed if item.get("completed", False))
+        
+        update_data = {"checklist_completed": checklist_data.checklist_completed}
+        
+        # Auto-update status based on checklist completion
+        if total_items > 0:
+            if completed_items == total_items:
+                # All items completed
+                update_data["status"] = "completed"
+                update_data["completed_at"] = datetime.now()
+                logger.info("All checklist items completed for task %s, setting status to 'completed'", task_id)
+            elif completed_items > 0:
+                # Some items completed - set to in_progress
+                update_data["status"] = "in_progress"
+                logger.info("Checklist progress for task %s: %d/%d items completed, setting status to 'in_progress'", 
+                           task_id, completed_items, total_items)
+
+        # Update the task with the new checklist and status
+        updated_task = await maintenance_task_service.update_task(
+            task_id,
+            update_data
+        )
+
+        if not updated_task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        return {
+            "success": True,
+            "message": "Checklist updated successfully",
+            "task": _serialize_task(updated_task),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error updating checklist for task %s: %s", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error updating checklist for task %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to update checklist: {exc}")
+
+
+@router.post("/{task_id}/checklist/{item_id}/assign")
+async def assign_checklist_item(
+    task_id: str,
+    item_id: str,
+    assignment_data: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Assign a staff member to a specific checklist item."""
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        staff_id = assignment_data.get("staff_id") or assignment_data.get("assigned_to")
+        if not staff_id:
+            raise HTTPException(status_code=400, detail="staff_id is required")
+
+        # Get the current task
+        task = await maintenance_task_service.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        # Get checklist
+        checklist = task.checklist_completed or []
+
+        # Find and update the specific item
+        item_found = False
+        for item in checklist:
+            if item.get("id") == item_id:
+                item["assigned_to"] = staff_id
+                item_found = True
+                break
+
+        if not item_found:
+            raise HTTPException(status_code=404, detail=f"Checklist item {item_id} not found")
+
+        # Update the task with modified checklist
+        updated_task = await maintenance_task_service.update_task(
+            task_id,
+            {"checklist_completed": checklist}
+        )
+
+        return {
+            "success": True,
+            "message": "Checklist item assigned successfully",
+            "task": _serialize_task(updated_task),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error assigning checklist item %s for task %s: %s", item_id, task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error assigning checklist item %s for task %s: %s", item_id, task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to assign checklist item: {exc}")
+
+
+@router.patch("/{task_id}/checklist/{item_id}")
+async def update_checklist_item(
+    task_id: str,
+    item_id: str,
+    item_update: ChecklistItemUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Update a single checklist item's completion status.
+
+    This is useful for toggling individual checklist items without sending the entire list.
+    """
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Get current task
+        task = await maintenance_task_service.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        # Get current checklist
+        current_checklist = task.checklist_completed or []
+        
+        # Find and update the specific item
+        item_found = False
+        updated_checklist = []
+        for item in current_checklist:
+            if item.get("id") == item_id:
+                item_found = True
+                updated_item = {
+                    "id": item_id,
+                    "task": item_update.task if item_update.task is not None else item.get("task", ""),
+                    "completed": item_update.completed
+                }
+                updated_checklist.append(updated_item)
+            else:
+                updated_checklist.append(item)
+
+        if not item_found:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Checklist item with id '{item_id}' not found"
+            )
+
+        # Determine status based on checklist completion
+        total_items = len(updated_checklist)
+        completed_items = sum(1 for item in updated_checklist if item.get("completed", False))
+        
+        update_data = {"checklist_completed": updated_checklist}
+        
+        # Auto-update status based on checklist completion
+        if total_items > 0:
+            if completed_items == total_items:
+                # All items completed
+                update_data["status"] = "completed"
+                update_data["completed_at"] = datetime.now()
+                logger.info("All checklist items completed for task %s, setting status to 'completed'", task_id)
+            elif completed_items > 0:
+                # Some items completed - set to in_progress
+                update_data["status"] = "in_progress"
+                if not task.started_at:
+                    update_data["started_at"] = datetime.now()
+                logger.info("Checklist progress for task %s: %d/%d items completed, setting status to 'in_progress'", 
+                           task_id, completed_items, total_items)
+
+        # Update the task
+        updated_task = await maintenance_task_service.update_task(
+            task_id,
+            update_data
+        )
+
+        return {
+            "success": True,
+            "message": "Checklist item updated successfully",
+            "task": _serialize_task(updated_task),
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error updating checklist item for task %s: %s", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error updating checklist item for task %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to update checklist item: {exc}")
+
+
+# Special Maintenance Tasks Endpoints
+
+@router.post("/special/initialize")
+async def initialize_special_tasks(
+):
+    """Initialize special maintenance tasks (Fire Safety, Earthquake, Typhoon/Flood)."""
+    try:
+
+        results = await special_maintenance_service.initialize_special_tasks(
+        )
+
+        return {
+            "success": True,
+            "message": "Special tasks initialization completed",
+            "results": results,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error initializing special tasks: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to initialize special tasks: {exc}")
+
+
+@router.get("/special")
+async def get_special_tasks(
+    current_user: dict = Depends(get_current_user),
+):
+    """Get all special maintenance tasks assigned to the current user (for staff) or all tasks (for admin)."""
+    try:
+        # If staff, filter by their user ID; if admin, show all tasks
+        user_id = None
+        if current_user.get("role") == "staff":
+            user_id = current_user.get("uid") or current_user.get("user_id")
+            logger.info(f"Fetching special tasks for staff user_id: {user_id}")
+        else:
+            logger.info("Fetching all special tasks for admin")
+
+        tasks = await special_maintenance_service.get_special_tasks(user_id=user_id)
+        serialized = [_serialize_task(task) for task in tasks]
+
+        logger.info(f"Returning {len(serialized)} special tasks for user role: {current_user.get('role')}")
+
+        return {
+            "success": True,
+            "tasks": serialized,
+        }
+
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error getting special tasks: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to get special tasks: {exc}")
+
+
+@router.get("/special/summary")
+async def get_special_tasks_summary(
+    current_user: dict = Depends(get_current_user),
+):
+    """Get summary information for all special maintenance tasks."""
+    try:
+        summaries = {}
+
+        for task_key in ["fire_safety", "earthquake", "typhoon_flood"]:
+            summaries[task_key] = await special_maintenance_service.get_special_task_summary(task_key)
+
+        return {
+            "success": True,
+            "summaries": summaries,
+        }
+
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error getting special tasks summary: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to get special tasks summary: {exc}")
+
+
+@router.get("/special/{task_key}")
+async def get_special_task(
+    task_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get a specific special maintenance task by key."""
+    try:
+        if task_key not in ["fire_safety", "earthquake", "typhoon_flood"]:
+            raise HTTPException(status_code=400, detail="Invalid task key")
+
+        task = await special_maintenance_service.get_special_task_by_key(task_key)
+
+        if not task:
+            raise HTTPException(status_code=404, detail="Special task not found")
+
+        return {
+            "success": True,
+            "task": _serialize_task(task),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error getting special task %s: %s", task_key, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to get special task: {exc}")
+
+
+@router.post("/special/{task_key}/reset")
+async def reset_special_task(
+    task_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Reset a special task's checklist and schedule next occurrence."""
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        if task_key not in ["fire_safety", "earthquake", "typhoon_flood"]:
+            raise HTTPException(status_code=400, detail="Invalid task key")
+
+        task = await special_maintenance_service.reset_special_task_checklist(task_key)
+
+        if not task:
+            raise HTTPException(status_code=404, detail="Special task not found")
+
+        return {
+            "success": True,
+            "message": f"Special task {task_key} reset successfully",
+            "task": _serialize_task(task),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.error("Error resetting special task %s: %s", task_key, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to reset special task: {exc}")

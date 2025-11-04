@@ -114,7 +114,8 @@ class AnnouncementService:
                 "attachments": attachments or [],
                 "tags": tags or [],
                 "view_count": 0,
-                
+                "read_by": [],  # Track which users have read this announcement
+
                 # Timestamps
                 "date_added": now,
                 "published_at": now if should_publish_now else None,
@@ -153,33 +154,13 @@ class AnnouncementService:
     
     async def get_announcements(
         self,
-        building_id: str,
-        audience: str = "all",
-        active_only: bool = True,
         limit: int = 50,
-        user_id: Optional[str] = None,
-        user_role: Optional[str] = None,
-        user_department: Optional[str] = None,
-        announcement_type: Optional[str] = None,
-        priority_level: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        published_only: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Get announcements for a specific building with advanced filtering
         
         Args:
-            building_id: Building ID to filter by
-            audience: Target audience (tenants, staff, admins, all)
-            active_only: Whether to return only active announcements
             limit: Maximum number of announcements to return
-            user_id: Specific user ID for targeted announcements
-            user_role: User's role for role-based filtering
-            user_department: User's department for department-based filtering
-            announcement_type: Filter by announcement type
-            priority_level: Filter by priority level
-            tags: Filter by tags
-            published_only: Only return published announcements
             
         Returns:
             List of announcement dictionaries
@@ -189,56 +170,15 @@ class AnnouncementService:
             # Query announcements
             success, announcements, error = await self.db.query_documents(
                 COLLECTIONS['announcements'],
-                limit=1000  # Get all matching, we'll filter in memory
+                limit=1000  
             )
             
             if not success:
                 logger.error(f"Failed to get announcements: {error}")
                 return []
             
-            # Advanced filtering based on targeting
-            filtered_announcements = []
-            now = datetime.now(timezone.utc)
-            
-            for announcement in announcements:
-                # Skip expired announcements
-                expiry = announcement.get('expiry_date')
-                if expiry:
-                    # Ensure expiry is timezone-aware
-                    if expiry.tzinfo is None:
-                        expiry = expiry.replace(tzinfo=timezone.utc)
-                    if expiry < now:
-                        continue
-                
-                # Skip scheduled announcements not yet published
-                scheduled = announcement.get('scheduled_publish_date')
-                if scheduled:
-                    # Ensure scheduled is timezone-aware
-                    if scheduled.tzinfo is None:
-                        scheduled = scheduled.replace(tzinfo=timezone.utc)
-                    if scheduled > now:
-                        continue
-                
-                # Ensure the 'id' field matches the actual document ID for consistency
-                # This handles both new announcements (where id == _doc_id) and legacy ones
-                doc_id = announcement.get('_doc_id')
-                if doc_id and announcement.get('id') != doc_id:
-                    # Use the actual Firestore document ID as the canonical ID
-                    announcement['id'] = doc_id
-                          
-                filtered_announcements.append(announcement)
-            
-            # Sort by priority and date
-            priority_order = {'critical': 0, 'urgent': 1, 'high': 2, 'normal': 3, 'low': 4}
-            filtered_announcements.sort(
-                key=lambda x: (
-                    priority_order.get(x.get('priority_level', 'normal'), 3),
-                    -(x.get('date_added', datetime.min).timestamp() if isinstance(x.get('date_added'), datetime) else 0)
-                )
-            )
-            
             # Apply limit
-            return filtered_announcements[:limit]
+            return announcements[:limit]
                 
         except Exception as e:
             logger.error(f"Error getting announcements: {str(e)}")
@@ -733,30 +673,54 @@ class AnnouncementService:
     
     async def increment_view_count(self, announcement_id: str, user_id: str) -> bool:
         """
-        Increment view count for an announcement
-        Can be enhanced to track individual user views
+        Mark announcement as read by user and increment view count
+
+        Args:
+            announcement_id: The announcement document ID
+            user_id: The user who viewed the announcement
+
+        Returns:
+            True if successful, False otherwise
         """
         try:
             announcement = await self.get_announcement_by_id(announcement_id)
             if not announcement:
+                logger.warning(f"Announcement {announcement_id} not found when marking as read")
                 return False
-            
-            current_count = announcement.get('view_count', 0)
-            updates = {
-                'view_count': current_count + 1,
-                'updated_at': datetime.now(timezone.utc)
-            }
-            
-            success, error = await self.db.update_document(
-                COLLECTIONS['announcements'],
-                announcement_id,
-                updates
-            )
-            
-            return success
-            
+
+            # Get current read_by list
+            read_by = announcement.get('read_by', [])
+
+            # Only update if user hasn't already read it
+            if user_id not in read_by:
+                read_by.append(user_id)
+                current_count = announcement.get('view_count', 0)
+
+                updates = {
+                    'read_by': read_by,
+                    'view_count': current_count + 1,
+                    'updated_at': datetime.now(timezone.utc)
+                }
+
+                success, error = await self.db.update_document(
+                    COLLECTIONS['announcements'],
+                    announcement_id,
+                    updates
+                )
+
+                if success:
+                    logger.info(f"User {user_id} marked announcement {announcement_id} as read")
+                else:
+                    logger.error(f"Failed to mark announcement as read: {error}")
+
+                return success
+            else:
+                # Already read by this user, no update needed
+                logger.debug(f"Announcement {announcement_id} already read by user {user_id}")
+                return True
+
         except Exception as e:
-            logger.error(f"Error incrementing view count: {str(e)}")
+            logger.error(f"Error marking announcement as read: {str(e)}")
             return False
     
     async def get_user_targeted_announcements(

@@ -475,33 +475,58 @@ class InventoryService:
             logger.error(error_msg)
             return False, error_msg
     
-    async def get_inventory_requests(self, building_id: str = None, status: str = None, 
+    async def get_inventory_requests(self, building_id: str = None, status: str = None,
                                    requested_by: str = None, maintenance_task_id: str = None) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
         """Get inventory requests with filters"""
         try:
             filters = []
-            
+
             if building_id:
                 # Need to join with inventory to filter by building
                 # For now, get all requests and filter in memory
                 pass
-            
+
             if status:
                 filters.append(('status', '==', status))
-            
+
             if requested_by:
                 filters.append(('requested_by', '==', requested_by))
-            
+
             if maintenance_task_id:
                 filters.append(('maintenance_task_id', '==', maintenance_task_id))
-            
+
             return await self.db.query_documents(COLLECTIONS['inventory_requests'], filters)
-            
+
         except Exception as e:
             error_msg = f"Error getting inventory requests: {str(e)}"
             logger.error(error_msg)
             return False, [], error_msg
-    
+
+    async def get_inventory_request_by_id(self, request_id: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Get inventory request by ID"""
+        try:
+            success, request_data, error = await self.db.get_document(COLLECTIONS['inventory_requests'], request_id)
+
+            if success and request_data:
+                # Enrich with inventory item details
+                inventory_id = request_data.get('inventory_id')
+                if inventory_id:
+                    item_success, item_data, _ = await self.get_inventory_item(inventory_id)
+                    if item_success and item_data:
+                        request_data['item_name'] = item_data.get('item_name')
+                        request_data['item_code'] = item_data.get('item_code')
+                        request_data['department'] = item_data.get('department')
+                        request_data['current_stock'] = item_data.get('current_stock')
+
+                return True, request_data, None
+            else:
+                return False, None, error
+
+        except Exception as e:
+            error_msg = f"Error getting inventory request {request_id}: {str(e)}"
+            logger.error(error_msg)
+            return False, None, error_msg
+
     async def get_requests_by_maintenance_task(self, maintenance_task_id: str) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
         """Get all inventory requests linked to a maintenance task"""
         try:

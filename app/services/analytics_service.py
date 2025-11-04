@@ -60,7 +60,123 @@ class AnalyticsService:
             total_tasks = total_concerns + total_jobs + total_maintenance
             total_completed = len(completed_concerns) + len(completed_jobs) + len(completed_maintenance)
             overall_completion_rate = (total_completed / total_tasks * 100) if total_tasks > 0 else 0
-            
+
+            # Calculate items completed today
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            completed_today = 0
+
+            for concern in completed_concerns:
+                if concern.updated_at:
+                    # Normalize both datetimes to naive for comparison
+                    updated_at = concern.updated_at.replace(tzinfo=None) if concern.updated_at.tzinfo else concern.updated_at
+                    if updated_at >= today_start:
+                        completed_today += 1
+
+            for job in completed_jobs:
+                if job.updated_at:
+                    updated_at = job.updated_at.replace(tzinfo=None) if job.updated_at.tzinfo else job.updated_at
+                    if updated_at >= today_start:
+                        completed_today += 1
+
+            for maintenance in completed_maintenance:
+                if maintenance.updated_at:
+                    updated_at = maintenance.updated_at.replace(tzinfo=None) if maintenance.updated_at.tzinfo else maintenance.updated_at
+                    if updated_at >= today_start:
+                        completed_today += 1
+
+            # Calculate average resolution time (in days)
+            resolution_times = []
+
+            for concern in completed_concerns:
+                if concern.created_at and concern.updated_at:
+                    # Normalize both datetimes to naive for comparison
+                    created_at = concern.created_at.replace(tzinfo=None) if concern.created_at.tzinfo else concern.created_at
+                    updated_at = concern.updated_at.replace(tzinfo=None) if concern.updated_at.tzinfo else concern.updated_at
+                    time_diff = updated_at - created_at
+                    resolution_times.append(time_diff.total_seconds() / 86400)  # Convert to days
+
+            for job in completed_jobs:
+                if job.created_at and job.updated_at:
+                    created_at = job.created_at.replace(tzinfo=None) if job.created_at.tzinfo else job.created_at
+                    updated_at = job.updated_at.replace(tzinfo=None) if job.updated_at.tzinfo else job.updated_at
+                    time_diff = updated_at - created_at
+                    resolution_times.append(time_diff.total_seconds() / 86400)
+
+            for maintenance in completed_maintenance:
+                if maintenance.created_at and maintenance.updated_at:
+                    created_at = maintenance.created_at.replace(tzinfo=None) if maintenance.created_at.tzinfo else maintenance.created_at
+                    updated_at = maintenance.updated_at.replace(tzinfo=None) if maintenance.updated_at.tzinfo else maintenance.updated_at
+                    time_diff = updated_at - created_at
+                    resolution_times.append(time_diff.total_seconds() / 86400)
+
+            average_resolution_time = sum(resolution_times) / len(resolution_times) if resolution_times else 0
+
+            # Calculate comparison metrics
+            # Yesterday's completed count
+            yesterday_start = (datetime.utcnow() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            yesterday_end = yesterday_start + timedelta(days=1)
+            completed_yesterday = 0
+
+            for concern in completed_concerns:
+                if concern.updated_at:
+                    updated_at = concern.updated_at.replace(tzinfo=None) if concern.updated_at.tzinfo else concern.updated_at
+                    if yesterday_start <= updated_at < yesterday_end:
+                        completed_yesterday += 1
+
+            for job in completed_jobs:
+                if job.updated_at:
+                    updated_at = job.updated_at.replace(tzinfo=None) if job.updated_at.tzinfo else job.updated_at
+                    if yesterday_start <= updated_at < yesterday_end:
+                        completed_yesterday += 1
+
+            for maintenance in completed_maintenance:
+                if maintenance.updated_at:
+                    updated_at = maintenance.updated_at.replace(tzinfo=None) if maintenance.updated_at.tzinfo else maintenance.updated_at
+                    if yesterday_start <= updated_at < yesterday_end:
+                        completed_yesterday += 1
+
+            # Last week's pending count (7 days ago)
+            last_week_date = datetime.utcnow() - timedelta(days=7)
+            # Note: For simplicity, we'll use current pending as baseline (proper implementation would store historical data)
+            # This is a placeholder - in production, you'd query historical snapshots
+
+            # Last month's total requests
+            last_month_start = (datetime.utcnow() - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+            total_requests_last_month = 0
+
+            for concern in all_concerns:
+                if concern.created_at:
+                    created_at = concern.created_at.replace(tzinfo=None) if concern.created_at.tzinfo else concern.created_at
+                    if created_at < last_month_start:
+                        total_requests_last_month += 1
+
+            for job in all_job_services:
+                if job.created_at:
+                    created_at = job.created_at.replace(tzinfo=None) if job.created_at.tzinfo else job.created_at
+                    if created_at < last_month_start:
+                        total_requests_last_month += 1
+
+            for maintenance in all_maintenance_tasks:
+                if maintenance.created_at:
+                    created_at = maintenance.created_at.replace(tzinfo=None) if maintenance.created_at.tzinfo else maintenance.created_at
+                    if created_at < last_month_start:
+                        total_requests_last_month += 1
+
+            # Calculate percentage changes
+            completed_today_change = 0.0
+            if completed_yesterday > 0:
+                completed_today_change = ((completed_today - completed_yesterday) / completed_yesterday) * 100
+
+            total_requests_change = 0.0
+            if total_requests_last_month > 0:
+                requests_this_month = total_tasks - total_requests_last_month
+                total_requests_change = ((requests_this_month - total_requests_last_month) / total_requests_last_month) * 100
+
+            # For pending items and resolution time, use simple heuristics
+            # (Proper implementation would require historical data storage)
+            pending_items_change = 0.0  # Placeholder
+            resolution_time_change = 0.0  # Placeholder
+
             return {
                 "concern_slips": {
                     "total_requests": total_concerns,
@@ -89,7 +205,19 @@ class AnalyticsService:
                     "total_requests": total_tasks,
                     "total_completed": total_completed,
                     "completion_rate": round(overall_completion_rate, 2),
-                    "pending_items": len(pending_concerns) + len(active_jobs) + len(scheduled_maintenance) + len(pending_permits)
+                    "pending_items": len(pending_concerns) + len(active_jobs) + len(scheduled_maintenance) + len(pending_permits),
+                    "completed_today": completed_today,
+                    "average_resolution_time_days": round(average_resolution_time, 2),
+                    "comparisons": {
+                        "total_requests_change": abs(round(total_requests_change, 1)),
+                        "total_requests_increasing": total_requests_change >= 0,
+                        "pending_items_change": abs(round(pending_items_change, 1)),
+                        "pending_items_increasing": pending_items_change >= 0,
+                        "completed_today_change": abs(round(completed_today_change, 1)),
+                        "completed_today_increasing": completed_today_change >= 0,
+                        "resolution_time_change": abs(round(resolution_time_change, 1)),
+                        "resolution_time_improving": resolution_time_change <= 0  # Lower is better for resolution time
+                    }
                 },
                 "last_updated": datetime.now().isoformat()
             }

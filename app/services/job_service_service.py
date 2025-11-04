@@ -244,18 +244,58 @@ class JobServiceService:
             
         return JobService(**updated_jobs_data[0])
 
+    async def _enrich_job_service_with_user_info(self, job_service_data: dict) -> dict:
+        """Enrich job service data with user information (requested_by name)"""
+        enriched_data = job_service_data.copy()
+
+        # Resolve created_by to get user information
+        created_by_uid = job_service_data.get("created_by") or job_service_data.get("reported_by")
+        if created_by_uid:
+            try:
+                # Try to find user by Firebase UID (stored in 'id' field)
+                success, user_docs, error = await self.db.query_documents(
+                    "users",
+                    [("id", "==", created_by_uid)],
+                    limit=1
+                )
+
+                if success and user_docs:
+                    user = user_docs[0]
+                    # Add requested_by field with user_id (e.g., T-0001, S-0002)
+                    enriched_data["requested_by"] = user.get("user_id") or user.get("tenant_id") or user.get("staff_id")
+                    # Add user's full name
+                    first_name = user.get("first_name", "")
+                    last_name = user.get("last_name", "")
+                    enriched_data["requested_by_name"] = f"{first_name} {last_name}".strip() or "Unknown User"
+                    # Add user's email
+                    enriched_data["requested_by_email"] = user.get("email")
+                else:
+                    # Fallback if user not found
+                    enriched_data["requested_by"] = created_by_uid
+                    enriched_data["requested_by_name"] = "Unknown User"
+            except Exception as e:
+                print(f"[JobServiceService] Error enriching user info: {e}")
+                enriched_data["requested_by"] = created_by_uid
+                enriched_data["requested_by_name"] = "Unknown User"
+
+        return enriched_data
+
     async def get_job_service(self, job_service_id: str) -> Optional[JobService]:
         """Get job service by ID from either collection"""
         # Try job_services collection first
         success, jobs_data, error = await self.db.query_documents("job_services", [("id", job_service_id)])
         if success and jobs_data and len(jobs_data) > 0:
-            return JobService(**jobs_data[0])
-        
+            # Enrich with user information
+            enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            return JobService(**enriched_data)
+
         # If not found, try job_service_requests collection
         success, jobs_data, error = await self.db.query_documents("job_service_requests", [("id", job_service_id)])
         if success and jobs_data and len(jobs_data) > 0:
-            return JobService(**jobs_data[0])
-        
+            # Enrich with user information
+            enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            return JobService(**enriched_data)
+
         return None
 
     async def get_job_services_by_staff(self, staff_id: str) -> List[JobService]:

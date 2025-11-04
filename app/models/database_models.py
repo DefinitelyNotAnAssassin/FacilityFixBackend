@@ -168,7 +168,7 @@ class ConcernSlip(BaseModel):
 class JobService(BaseModel):
     id: Optional[str] = None
     concern_slip_id: str  # Links to concern_slip
-    created_by: str  # admin user_id
+    created_by: str  # admin user_id or Firebase UID of creator
     assigned_to: Optional[str] = None  # internal staff user_id
     title: str
     description: str
@@ -186,26 +186,52 @@ class JobService(BaseModel):
     completion_notes: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    # Enriched fields (computed from created_by)
+    requested_by: Optional[str] = None  # User ID (T-0001, S-0002, etc.)
+    requested_by_name: Optional[str] = None  # Full name of requester
+    requested_by_email: Optional[str] = None  # Email of requester
 class WorkOrderPermit(BaseModel):
     id: Optional[str] = None
-    concern_slip_id: str  # Links to concern_slip
+    
+    # Required fields for both standalone and concern-linked permits
     requested_by: str  # tenant user_id
-    unit_id: str
-    contractor_name: str
-    contractor_contact: str
-    contractor_company: Optional[str] = None
-    work_description: str
-    proposed_start_date: datetime
-    estimated_duration: str  # e.g., "2 hours", "1 day"
-    specific_instructions: str
-    entry_requirements: Optional[str] = None  # Special access needs
     status: str = Field(default="pending")  # pending, approved, denied, completed
+    
+    # Optional fields - concern slip workflow
+    concern_slip_id: Optional[str] = None  # Links to concern_slip (if created from concern)
+    contractor_name: Optional[str] = None
+    contractor_contact: Optional[str] = None
+    contractor_company: Optional[str] = None
+    work_description: Optional[str] = None
+    proposed_start_date: Optional[datetime] = None
+    estimated_duration: Optional[str] = None  # e.g., "2 hours", "1 day"
+    specific_instructions: Optional[str] = None
+    entry_requirements: Optional[str] = None  # Special access needs
+    
+    # Optional fields - standalone workflow
+    formatted_id: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+    category: Optional[str] = None
+    priority: Optional[str] = None
+    request_type: Optional[str] = None
+    unit_id: Optional[str] = None
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    contractors: Optional[List[dict]] = None
+    attachments: Optional[List[str]] = None
+    submitted_at: Optional[str] = None
+    
+    # Common approval/completion fields
     approved_by: Optional[str] = None  # admin user_id
     approval_date: Optional[datetime] = None
     denial_reason: Optional[str] = None
     permit_conditions: Optional[str] = None  # Special conditions for approval
     actual_start_date: Optional[datetime] = None
     actual_completion_date: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     admin_notes: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -218,35 +244,36 @@ class MaintenanceTask(BaseModel):
     equipment_id: Optional[str] = None
     building_id: str
     assigned_to: Optional[str] = None  # user_id or staff name
-    
+
     # Task details
     task_title: str
     task_description: str
     location: str
     category: str = Field(default="preventive")  # preventive, corrective, emergency
     priority: str = Field(default="medium")  # low, medium, high, critical
-    
+
     # Scheduling information
     task_type: str = Field(default="scheduled")  # scheduled, recurring, on_demand, internal, external
     maintenance_type: Optional[str] = None  # internal, external, ipm, epm
     scheduled_date: datetime
     scheduled_time_slot: Optional[str] = None  # "09:00-12:00"
     estimated_duration: Optional[int] = None  # in minutes
-    
+
     # Execution tracking
     status: str = Field(default="scheduled")  # scheduled, assigned, in_progress, completed, cancelled, overdue
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     actual_duration: Optional[int] = None  # in minutes
-    
+
     # Recurrence handling
     recurrence_type: str = Field(default="none")  # none, daily, weekly, monthly, quarterly, yearly, custom
     parent_task_id: Optional[str] = None  # for recurring tasks
     next_occurrence: Optional[datetime] = None
-    
+
     # Resource tracking
     parts_used: Optional[List[dict]] = []  # [{"inventory_id": "...", "quantity": 2}]
     tools_used: Optional[List[str]] = []
+    inventory_request_ids: Optional[List[str]] = []  # IDs of linked inventory requests
     
     # Documentation
     completion_notes: Optional[str] = None

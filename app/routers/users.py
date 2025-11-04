@@ -16,6 +16,7 @@ class UserUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     phone_number: Optional[str] = None
+    birth_date: Optional[str] = None  # Birth date in YYYY-MM-DD format
     department: Optional[str] = None  # Legacy single department
     departments: Optional[List[str]] = None  # New: Multiple departments
     staff_department: Optional[str] = None  # Legacy single staff department
@@ -218,7 +219,6 @@ async def get_user(
 async def update_user(
     user_id: str,
     user_update: UserUpdate,
-    current_user: dict = Depends(require_admin),
 ):
     """Update the user whose `user_id` == {user_id} (e.g., T-0001)."""
     try:
@@ -233,7 +233,11 @@ async def update_user(
             update_data["last_name"] = user_update.last_name
         if user_update.phone_number is not None:
             update_data["phone_number"] = user_update.phone_number
-        
+        if user_update.birth_date is not None:
+            update_data["birth_date"] = user_update.birth_date
+            # Also update birthdate field for backward compatibility
+            update_data["birthdate"] = user_update.birth_date
+
         # Handle departments - support both legacy single and new multiple
         if user_update.departments is not None:
             update_data["departments"] = user_update.departments
