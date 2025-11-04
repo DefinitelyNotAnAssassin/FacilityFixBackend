@@ -6,12 +6,14 @@ from app.database.collections import COLLECTIONS
 from app.services.ai_integration_service import AIIntegrationService
 from app.services.concern_slip_id_service import concern_slip_id_service
 from app.services.notification_manager import NotificationManager
+from app.services.user_id_service import UserIdService
 import uuid
 import logging
 from firebase_admin import credentials, firestore
 
 logger = logging.getLogger(__name__)
 
+UserIdService = UserIdService()
 class ConcernSlipService:
     def __init__(self):
         self.db = DatabaseService()
@@ -147,9 +149,13 @@ class ConcernSlipService:
         
         for slip in concern_data: 
             curr = slip._data  # transform DocumentSnapshot from class to dict 
-            curr = ConcernSlip(**curr) # feed to the model
         
             if curr: 
+                curr["reported_by"] = await UserIdService.get_user_profile(curr["reported_by"])
+                curr["reported_by"] = curr["reported_by"].first_name + " " + curr["reported_by"].last_name if curr["reported_by"] else "Unknown"
+                print("Reported By:", curr["reported_by"])
+                
+                curr = ConcernSlip(**curr) # feed to the model
                 slips.append(curr)
                 
             else: 

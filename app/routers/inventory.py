@@ -728,7 +728,7 @@ async def get_my_maintenance_inventory_requests(
 
         for task in all_tasks:
             # Check if whole task is assigned to user
-            if task.assigned_to == f"{user_profile.first_name} {user_profile.last_name}" or task.assigned_to == user_id:
+            if task.assigned_to == f"{user_profile.first_name} {user_profile.last_name}" or task.assigned_to == user_id or task.assigned_staff_name == f"{user_profile.first_name} {user_profile.last_name}":
                 assigned_tasks.append(task)
                 continue
 

@@ -72,5 +72,33 @@ class UserIdService:
         unit_number = parts[1]
         
         return building_id, unit_number
+    
+    
+    @staticmethod 
+    async def get_staff_profile_from_staff_id(staff_id: str) -> UserProfile:
+        """Get staff profile by staff ID"""
+        success, user_data, error = await database_service.query_collection(
+            COLLECTIONS['users'],
+            [("staff_id", "==", staff_id)],
+        
+        )
+        
+        if not success or not user_data:
+            print("No user data found for staff ID:", staff_id)
+            print("Error:", error)
+            print("User Data:", user_data)
+            return None
+        
+            
+        return UserProfile(**user_data[0])
 
+
+    @staticmethod 
+    async def get_user_full_name(user_id: str) -> str:
+        """Get full name of user by user ID"""
+        user_profile = await UserIdService.get_user_profile(user_id)
+        if not user_profile:
+            return "Unknown User"
+        
+        return f"{user_profile.first_name} {user_profile.last_name}"
 user_id_service = UserIdService()

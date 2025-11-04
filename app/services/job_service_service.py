@@ -340,31 +340,76 @@ class JobServiceService:
                         print(f"Warning: Skipping job service {job.get('id', 'unknown')} - missing concern_slip_id")
                         continue
                     
+                    
+                    created_by = job.get("created_by")   
+                    print("CREATED BY:", created_by )
+                    created_by = await self.user_service.get_user_profile(created_by)
+                    created_by = created_by.first_name + " " + created_by.last_name if created_by else "Unknown"
+                    staff_profile = await self.user_service.get_staff_profile_from_staff_id(job.get("assigned_to"))  
+                    print("ASSIGNED TO: ", job.get("assigned_to") )
+                    print("STAFF PROFILE: ", staff_profile )
+                    print(type(staff_profile))
                     # Create a more flexible JobService object
-                    job_service = JobService(
-                        id=job.get("id", ""),
-                        concern_slip_id=concern_slip_id,
-                        created_by=job.get("created_by", "system"),
-                        title=job.get("title", "Job Service"),
-                        description=job.get("description", ""),
-                        location=job.get("location", ""),
-                        category=job.get("category", "general"),
-                        priority=job.get("priority", "medium"),
-                        status=job.get("status", "pending"),
-                        created_at=job.get("created_at", datetime.utcnow()),
-                        updated_at=job.get("updated_at", datetime.utcnow()),
-                        # Optional fields
-                        assigned_to=job.get("assigned_to"),
-                        scheduled_date=job.get("scheduled_date"),
-                        estimated_hours=job.get("estimated_hours"),
-                        materials_used=job.get("materials_used", []),
-                        staff_notes=job.get("staff_notes"),
-                        completion_notes=job.get("completion_notes"),
-                        started_at=job.get("started_at"),
-                        completed_at=job.get("completed_at"),
-                        actual_hours=job.get("actual_hours")
-                    )
-                    result.append(job_service)
+                    if staff_profile:
+                        job["staff_profile"] = {
+                            "staff_id": staff_profile.staff_id,
+                            "first_name": staff_profile.first_name,
+                            "last_name": staff_profile.last_name,
+                            "phone_number": staff_profile.phone_number
+                        }
+                        
+                    if staff_profile:
+                        job_service = JobService(
+                            id=job.get("id", ""),
+                            concern_slip_id=concern_slip_id,
+                            created_by=created_by,
+                            title=job.get("title", "Job Service"),
+                            description=job.get("description", ""),
+                            location=job.get("location", ""),
+                            category=job.get("category", "general"),
+                            priority=job.get("priority", "medium"),
+                            status=job.get("status", "pending"),
+                            created_at=job.get("created_at", datetime.utcnow()),
+                            updated_at=job.get("updated_at", datetime.utcnow()),
+                            # Optional fields
+                            staff_profile=job.get("staff_profile"),
+                            assigned_to=job.get("assigned_to"),
+                            scheduled_date=job.get("scheduled_date"),
+                            estimated_hours=job.get("estimated_hours"),
+                            materials_used=job.get("materials_used", []),
+                            staff_notes=job.get("staff_notes"),
+                            completion_notes=job.get("completion_notes"),
+                            started_at=job.get("started_at"),
+                            completed_at=job.get("completed_at"),
+                            actual_hours=job.get("actual_hours")
+                        )
+                        result.append(job_service)
+                        
+                    else: 
+                        job_service = JobService(
+                            id=job.get("id", ""),
+                            concern_slip_id=concern_slip_id,
+                            created_by=created_by,
+                            title=job.get("title", "Job Service"),
+                            description=job.get("description", ""),
+                            location=job.get("location", ""),
+                            category=job.get("category", "general"),
+                            priority=job.get("priority", "medium"),
+                            status=job.get("status", "pending"),
+                            created_at=job.get("created_at", datetime.utcnow()),
+                            updated_at=job.get("updated_at", datetime.utcnow()),
+                            # Optional fields
+                            assigned_to=job.get("assigned_to"),
+                            scheduled_date=job.get("scheduled_date"),
+                            estimated_hours=job.get("estimated_hours"),
+                            materials_used=job.get("materials_used", []),
+                            staff_notes=job.get("staff_notes"),
+                            completion_notes=job.get("completion_notes"),
+                            started_at=job.get("started_at"),
+                            completed_at=job.get("completed_at"),
+                            actual_hours=job.get("actual_hours")
+                        )
+                        result.append(job_service)
                 except Exception as e:
                     print(f"Warning: Could not create JobService object for {job.get('id', 'unknown')}: {e}")
                     # Continue with next job instead of failing completely

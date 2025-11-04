@@ -183,6 +183,7 @@ class JobService(BaseModel):
     estimated_hours: Optional[float] = None
     actual_hours: Optional[float] = None
     materials_used: Optional[List[str]] = []
+    staff_profile: Optional[dict] = None  # Enriched staff profile data
     staff_notes: Optional[str] = None
     completion_notes: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -258,7 +259,7 @@ class MaintenanceTask(BaseModel):
     maintenance_type: Optional[str] = None  # internal, external, ipm, epm
     scheduled_date: datetime
     scheduled_time_slot: Optional[str] = None  # "09:00-12:00"
-    estimated_duration: Optional[int] = None  # in minutes
+    estimated_duration: Optional[int] = Field(default=None, ge=1)  # in minutes, minimum 1
 
     # Execution tracking
     status: str = Field(default="scheduled")  # scheduled, assigned, in_progress, completed, cancelled, overdue

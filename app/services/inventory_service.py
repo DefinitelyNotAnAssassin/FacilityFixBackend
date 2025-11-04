@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
+from app.services.user_id_service import UserIdService
 from ..models.database_models import (
     Inventory, InventoryTransaction, InventoryRequest, 
     LowStockAlert, InventoryUsageAnalytics
@@ -67,7 +68,7 @@ class InventoryService:
             # First try to find by custom ID field
             success, items, error = await self.db.query_documents(
                 COLLECTIONS['inventory'],
-                [('id', '==', item_id)]
+                [('item_code', '==', item_id)]
             )
             
             if success and items:
@@ -517,7 +518,7 @@ class InventoryService:
                         request_data['item_code'] = item_data.get('item_code')
                         request_data['department'] = item_data.get('department')
                         request_data['current_stock'] = item_data.get('current_stock')
-
+                        request_data['requested_by'] = await UserIdService.get_user_full_name(request_data.get('requested_by'))
                 return True, request_data, None
             else:
                 return False, None, error

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from app.database.collections import COLLECTIONS
 from app.database.database_service import DatabaseService, database_service
 from app.models.database_models import MaintenanceTask
+from app.services.user_id_service import UserIdService
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ class MaintenanceTaskService:
 
     def __init__(self) -> None:
         self.db = database_service or DatabaseService()
+        self.user_service = UserIdService()
 
     async def list_tasks(self, filters: Optional[Dict[str, Any]] = None) -> List[MaintenanceTask]:
         """Return maintenance tasks filtered by the supplied attributes."""

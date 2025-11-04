@@ -4,13 +4,16 @@ from app.models.database_models import WorkOrderPermit, UserProfile, ConcernSlip
 from app.database.database_service import DatabaseService
 from app.services.user_id_service import UserIdService
 from app.services.notification_manager import notification_manager
+from app.services.concern_slip_service import ConcernSlipService
 from app.models.notification_models import NotificationType
 import uuid
+
 
 class WorkOrderPermitService:
     def __init__(self):
         self.db = DatabaseService()
         self.user_service = UserIdService()
+        self.concern_slip_service = ConcernSlipService()
 
     async def create_work_order_permit(self, concern_slip_id: str, requested_by: str, permit_data: dict) -> WorkOrderPermit:
         """Create a new work order permit for external worker authorization"""
@@ -300,6 +303,19 @@ class WorkOrderPermitService:
     async def get_all_permits(self) -> List[WorkOrderPermit]:
         """Get all work order permits (Admin only)"""
         permits = await self.db.get_all_documents("work_order_permits")
+        
+        for permit in permits: 
+            permit["staff_profile"] = None
+            if permit.get("requested_by"):
+                requested_by = permit.get("requested_by")
+                user_profile = await self.user_service.get_user_profile(requested_by)   
+                permit['requested_by'] = f"{user_profile.first_name} {user_profile.last_name}" if user_profile else "Unknown"
+            if permit.get("concern_slip_id"): 
+                concern_slip_id = permit.get("concern_slip_id")
+                concern_slip = await self.concern_slip_service.get_concern_slip(concern_slip_id)
+                permit['concern_slip_id'] = concern_slip.formatted_id if concern_slip else "Unknown"
+
+        
         return [WorkOrderPermit(**permit) for permit in permits]
 
     async def _update_permit_by_doc_id(self, document_id: str, update_data: dict) -> tuple[bool, str]:

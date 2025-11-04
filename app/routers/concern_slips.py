@@ -5,6 +5,7 @@ from datetime import datetime
 from app.models.database_models import ConcernSlip
 from app.services.concern_slip_service import ConcernSlipService
 from app.auth.dependencies import get_current_user, require_role
+from app.services.user_id_service import UserIdService
 import logging 
 
 
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/concern-slips", tags=["concern-slips"])
 
 logger = logging.basicConfig(level=logging.INFO)
 
+UserService = UserIdService()
 
 # Request Models
 class CreateConcernSlipRequest(BaseModel):
@@ -58,6 +60,7 @@ async def fetch_concern_slips(
 
     else: 
         concern_slips = await service.get_all_concern_slips() 
+        
     
     return concern_slips
     
@@ -440,6 +443,9 @@ async def get_all_concern_slips(current_user: dict = Depends(get_current_user)):
         # Convert to dict format for API response
         result = []
         for slip in concern_slips:
+            reported_by = slip.reported_by 
+            reported_by = await UserService.get_user_profile(reported_by)
+            print("Reported By:", reported_by)
             slip_dict = {
                 "id": slip.id,
                 "formatted_id": slip.formatted_id,
@@ -450,7 +456,7 @@ async def get_all_concern_slips(current_user: dict = Depends(get_current_user)):
                 "priority": slip.priority,
                 "status": slip.status,
                 "unit_id": slip.unit_id,
-                "reported_by": slip.reported_by,
+                "reported_by": f"{reported_by.full_name if reported_by else 'Unknown'}",
                 "assigned_to": slip.assigned_to,
                 "created_at": slip.created_at.isoformat() if slip.created_at else None,
                 "updated_at": slip.updated_at.isoformat() if slip.updated_at else None,
