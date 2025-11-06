@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,11 +10,103 @@ from app.auth.dependencies import get_current_user
 from app.models.database_models import MaintenanceTask
 from app.services.maintenance_task_service import maintenance_task_service
 from app.services.special_maintenance_service import special_maintenance_service
-from app.services.user_id_service import user_id_service
-
+from app.services.user_id_service import UserIdService, user_id_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/maintenance", tags=["maintenance"])
+
+
+def _compute_next_due_date(start_date: datetime, recurrence_type: str) -> Optional[datetime]:
+    """
+    Compute the next due date based on start date and recurrence type.
+
+    Recurrence format examples:
+    - "Every 1 month", "3 months"
+    - "Every 2 weeks", "2 weeks"
+    - "monthly", "quarterly", "yearly"
+    - "daily", "weekly", "biweekly"
+    - "none" or empty = no recurrence
+
+    Returns:
+        The next occurrence date, or None if no recurrence
+    """
+    if not recurrence_type or recurrence_type.lower() in ["none", "n/a", ""]:
+        return None
+
+    try:
+        recurrence_lower = recurrence_type.lower().strip()
+
+        # Check for named recurrence patterns first (monthly, quarterly, etc.)
+        named_patterns = {
+            "daily": (1, "day"),
+            "weekly": (1, "week"),
+            "biweekly": (2, "week"),
+            "bi-weekly": (2, "week"),
+            "fortnightly": (2, "week"),
+            "monthly": (1, "month"),
+            "quarterly": (3, "month"),
+            "semi-annually": (6, "month"),
+            "semiannually": (6, "month"),
+            "semi-annual": (6, "month"),
+            "annually": (1, "year"),
+            "yearly": (1, "year"),
+            "annual": (1, "year"),
+        }
+
+        if recurrence_lower in named_patterns:
+            amount, unit = named_patterns[recurrence_lower]
+            logger.debug(f"Matched named pattern '{recurrence_lower}': {amount} {unit}")
+        else:
+            # Parse numeric recurrence string (e.g., "Every 1 month", "2 weeks", "3 months")
+            # Make "every" optional to support both "Every 3 months" and "3 months" formats
+            pattern = r"(?:every\s+)?(\d+)\s+(day|days|week|weeks|month|months|year|years)"
+            match = re.search(pattern, recurrence_lower)
+
+            if not match:
+                logger.warning(f"Could not parse recurrence type: {recurrence_type}")
+                return None
+
+            amount = int(match.group(1))
+            unit = match.group(2)
+
+        # Normalize unit to singular
+        if unit.endswith('s'):
+            unit = unit[:-1]
+
+        # Calculate next occurrence
+        if unit == "day":
+            return start_date + timedelta(days=amount)
+        elif unit == "week":
+            return start_date + timedelta(weeks=amount)
+        elif unit == "month":
+            # Add months by incrementing month field
+            month = start_date.month + amount
+            year = start_date.year
+            while month > 12:
+                month -= 12
+                year += 1
+            # Handle day overflow (e.g., Jan 31 + 1 month = Feb 28/29)
+            try:
+                return start_date.replace(year=year, month=month)
+            except ValueError:
+                # Day doesn't exist in target month, use last day of month
+                if month == 2:
+                    # February - check for leap year
+                    day = 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28
+                elif month in [4, 6, 9, 11]:
+                    day = 30
+                else:
+                    day = 31
+                return start_date.replace(year=year, month=month, day=day)
+        elif unit == "year":
+            return start_date.replace(year=start_date.year + amount)
+        else:
+            logger.warning(f"Unknown recurrence unit: {unit}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error computing next due date: {str(e)}")
+        return None
 class MaintenanceTaskCreate(BaseModel):
     building_id: str
     task_title: str
@@ -26,7 +119,7 @@ class MaintenanceTaskCreate(BaseModel):
     task_type: Optional[str] = "scheduled"
     maintenance_type: Optional[str] = None  # internal, external, ipm, epm
     scheduled_time_slot: Optional[str] = None
-    estimated_duration: Optional[int] = Field(default=None, ge=0)
+    estimated_duration: Optional[int] = Field(default=None, ge=1)  # At least 1 minute
     recurrence_type: Optional[str] = "none"
     parent_task_id: Optional[str] = None
     template_id: Optional[str] = None
@@ -84,7 +177,7 @@ class MaintenanceTaskUpdate(BaseModel):
     assigned_to: Optional[str] = None
     scheduled_date: Optional[datetime] = None
     scheduled_time_slot: Optional[str] = None
-    estimated_duration: Optional[int] = Field(default=None, ge=0)
+    estimated_duration: Optional[int] = Field(default=None, ge=1)  # At least 1 minute
     task_type: Optional[str] = None
     maintenance_type: Optional[str] = None
     recurrence_type: Optional[str] = None
@@ -123,9 +216,30 @@ class MaintenanceTaskUpdate(BaseModel):
     inventory_request_ids: Optional[List[str]] = None
 
 
-def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
+async def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
     data = task.dict()
-    
+
+    # Compute next_occurrence based on recurrence type and dates
+    recurrence_type = data.get("recurrence_type")
+    if recurrence_type and recurrence_type.lower() not in ["none", "n/a", ""]:
+        # Determine base date for calculation
+        # If task is completed, calculate from completed_at; otherwise use scheduled_date
+        base_date = None
+        if data.get("completed_at"):
+            base_date = data.get("completed_at")
+        elif data.get("scheduled_date"):
+            base_date = data.get("scheduled_date")
+
+        if base_date:
+            # Compute next occurrence
+            next_due = _compute_next_due_date(base_date, recurrence_type)
+            if next_due:
+                data["next_occurrence"] = next_due
+                logger.debug(
+                    f"Computed next_occurrence for task {data.get('id')}: {next_due} "
+                    f"from base_date {base_date} with recurrence {recurrence_type}"
+                )
+
     # Serialize datetime fields
     for key in (
         "scheduled_date",
@@ -141,14 +255,33 @@ def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
 
     # Ensure ID fields
     data["formatted_id"] = data.get("formatted_id") or data.get("id")
-    
+
     # Ensure title fields
     data["task_title"] = data.get("task_title") or data.get("title") or "Maintenance Task"
     data["title"] = data.get("task_title")
+
+    # Set next_occurence (with typo for backwards compatibility) and next_due_date
+    next_occurrence = data.get("next_occurrence")
+    data["next_occurence"] = next_occurrence
+    if next_occurrence:
+        # If next_occurrence is a datetime object (before serialization), format it
+        if isinstance(next_occurrence, datetime):
+            data["next_due_date"] = next_occurrence.strftime("%Y-%m-%d")
+        # If it's already a string (ISO format), parse and format it
+        elif isinstance(next_occurrence, str):
+            try:
+                parsed_date = datetime.fromisoformat(next_occurrence.replace('Z', '+00:00'))
+                data["next_due_date"] = parsed_date.strftime("%Y-%m-%d")
+            except (ValueError, AttributeError):
+                data["next_due_date"] = None
+    else:
+        data["next_due_date"] = None
     
     # Ensure staff assignment fields
     data["assigned_staff"] = data.get("assigned_to")
     data["assigned_staff_id"] = data.get("assigned_to")
+    
+    data["created_by"] = await UserIdService.get_user_full_name(data.get("created_by")) if data.get("created_by") else "System"
     
     # Ensure location
     data["location"] = data.get("location") or ""
@@ -220,7 +353,7 @@ async def get_all_maintenance_tasks(
         )
 
         tasks = await maintenance_task_service.list_tasks(filters)
-        serialized = [_serialize_task(task) for task in tasks]
+        serialized = [await _serialize_task(task) for task in tasks]
         logger.info("[DEBUG] Returning %d maintenance tasks", len(serialized))
         return serialized
 
@@ -257,6 +390,8 @@ async def get_my_assigned_tasks(
 
         # Get all tasks matching the filters
         all_tasks = await maintenance_task_service.list_tasks(filters)
+        
+        print("ALL TASKS:", all_tasks)
 
         # Filter to only include:
         # 1. Tasks where assigned_to == user_id
@@ -264,10 +399,10 @@ async def get_my_assigned_tasks(
         assigned_tasks = []
         for task in all_tasks:
             # Check if whole task is assigned to user
-            if task.assigned_to == f"{current_user.first_name} {current_user.last_name}" or task.assigned_to == user_id:
+            if task.assigned_to == f"{current_user.first_name} {current_user.last_name}" or task.assigned_to == user_id or task.assigned_staff_name == f"{current_user.first_name} {current_user.last_name}":
                 assigned_tasks.append(task)
                 continue
-
+            
             # Check if any checklist item is assigned to user
             checklist = task.checklist_completed or []
             has_assigned_item = any(
@@ -278,7 +413,7 @@ async def get_my_assigned_tasks(
             if has_assigned_item:
                 assigned_tasks.append(task)
 
-        serialized = [_serialize_task(task) for task in assigned_tasks]
+        serialized = [await _serialize_task(task) for task in assigned_tasks]
         logger.info("[DEBUG] Returning %d assigned tasks for user %s", len(serialized), user_id)
         return serialized
 
@@ -303,7 +438,7 @@ async def get_maintenance_task_by_id(
         if not task:
             raise HTTPException(status_code=404, detail="Maintenance task not found")
 
-        return _serialize_task(task)
+        return await _serialize_task(task)
 
     except HTTPException:
         raise
@@ -322,15 +457,29 @@ async def create_maintenance_task(
         if current_user.get("role") not in {"admin", "staff"}:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+        # Convert to dict
+        task_dict = task_data.dict(exclude_unset=True)
+
+        # Auto-compute next_occurrence (next_due_date) if recurrence and scheduled_date are provided
+        scheduled_date = task_dict.get("scheduled_date")
+        recurrence_type = task_dict.get("recurrence_type")
+
+        if scheduled_date and recurrence_type:
+            next_due = _compute_next_due_date(scheduled_date, recurrence_type)
+            if next_due:
+                task_dict["next_occurrence"] = next_due
+                task_dict["next_due_date"] = next_due.strftime("%Y-%m-%d")
+                logger.info(f"Auto-computed next_occurrence: {next_due} from recurrence: {recurrence_type}")
+
         task = await maintenance_task_service.create_task(
             current_user.get("uid"),
-            task_data.dict(exclude_unset=True),
+            task_dict,
         )
 
         return {
             "success": True,
             "message": "Maintenance task created successfully",
-            "task": _serialize_task(task),
+            "task": await _serialize_task(task),
         }
 
     except HTTPException:
@@ -354,9 +503,35 @@ async def update_maintenance_task(
         if current_user.get("role") not in {"admin", "staff"}:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+        # Convert to dict
+        update_dict = updates.dict(exclude_unset=True)
+
+        # Auto-compute next_occurrence if recurrence_type or scheduled_date is being updated
+        if "recurrence_type" in update_dict or "scheduled_date" in update_dict:
+            # Get current task to access existing values
+            current_task = await maintenance_task_service.get_task(task_id)
+            if not current_task:
+                raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+            # Use updated values if provided, otherwise use existing values
+            scheduled_date = update_dict.get("scheduled_date") or current_task.scheduled_date
+            recurrence_type = update_dict.get("recurrence_type") or current_task.recurrence_type
+
+            if scheduled_date and recurrence_type:
+                next_due = _compute_next_due_date(scheduled_date, recurrence_type)
+                if next_due:
+                    update_dict["next_occurrence"] = next_due
+                    update_dict["next_due_date"] = next_due.strftime("%Y-%m-%d")
+                    logger.info(f"Auto-computed next_occurrence: {next_due} for task {task_id} from recurrence: {recurrence_type}")
+                else:
+                    # No recurrence or could not parse, clear next_occurrence
+                    update_dict["next_occurrence"] = None
+                    update_dict["next_due_date"] = None
+                    logger.info(f"Cleared next_occurrence for task {task_id} (no recurrence)")
+
         updated = await maintenance_task_service.update_task(
             task_id,
-            updates.dict(exclude_unset=True),
+            update_dict,
         )
 
         if not updated:
@@ -365,7 +540,7 @@ async def update_maintenance_task(
         return {
             "success": True,
             "message": "Maintenance task updated successfully",
-            "task": _serialize_task(updated),
+            "task": await _serialize_task(updated),
         }
 
     except HTTPException:
@@ -457,7 +632,7 @@ async def assign_staff_to_maintenance_task(
         return {
             "success": True,
             "message": "Staff assigned successfully",
-            "task": _serialize_task(updated_task),
+            "task": await _serialize_task(updated_task),
         }
 
     except HTTPException:
@@ -536,7 +711,7 @@ async def update_maintenance_checklist(
         return {
             "success": True,
             "message": "Checklist updated successfully",
-            "task": _serialize_task(updated_task),
+            "task": await _serialize_task(updated_task),
         }
 
     except HTTPException:
@@ -593,7 +768,7 @@ async def assign_checklist_item(
         return {
             "success": True,
             "message": "Checklist item assigned successfully",
-            "task": _serialize_task(updated_task),
+            "task": await _serialize_task(updated_task),
         }
 
     except HTTPException:
@@ -681,7 +856,7 @@ async def update_checklist_item(
         return {
             "success": True,
             "message": "Checklist item updated successfully",
-            "task": _serialize_task(updated_task),
+            "task": await _serialize_task(updated_task),
         }
 
     except HTTPException:
@@ -733,7 +908,7 @@ async def get_special_tasks(
             logger.info("Fetching all special tasks for admin")
 
         tasks = await special_maintenance_service.get_special_tasks(user_id=user_id)
-        serialized = [_serialize_task(task) for task in tasks]
+        serialized = [await _serialize_task(task) for task in tasks]
 
         logger.info(f"Returning {len(serialized)} special tasks for user role: {current_user.get('role')}")
 
@@ -785,7 +960,7 @@ async def get_special_task(
 
         return {
             "success": True,
-            "task": _serialize_task(task),
+            "task": await _serialize_task(task),
         }
 
     except HTTPException:
@@ -816,7 +991,7 @@ async def reset_special_task(
         return {
             "success": True,
             "message": f"Special task {task_key} reset successfully",
-            "task": _serialize_task(task),
+            "task": await _serialize_task(task),
         }
 
     except HTTPException:

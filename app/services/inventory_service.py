@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
+from app.services.user_id_service import UserIdService
 from ..models.database_models import (
     Inventory, InventoryTransaction, InventoryRequest, 
     LowStockAlert, InventoryUsageAnalytics
@@ -67,7 +68,7 @@ class InventoryService:
             # First try to find by custom ID field
             success, items, error = await self.db.query_documents(
                 COLLECTIONS['inventory'],
-                [('id', '==', item_id)]
+                [('item_code', '==', item_id)]
             )
             
             if success and items:
@@ -517,7 +518,7 @@ class InventoryService:
                         request_data['item_code'] = item_data.get('item_code')
                         request_data['department'] = item_data.get('department')
                         request_data['current_stock'] = item_data.get('current_stock')
-
+                        request_data['requested_by'] = await UserIdService.get_user_full_name(request_data.get('requested_by'))
                 return True, request_data, None
             else:
                 return False, None, error
@@ -752,7 +753,7 @@ class InventoryService:
         try:
             current_stock = item_data.get('current_stock', 0)
             reorder_level = item_data.get('reorder_level', 0)
-            
+
             if current_stock <= reorder_level:
                 # Determine alert level
                 if current_stock == 0:
@@ -761,7 +762,7 @@ class InventoryService:
                     alert_level = "critical"
                 else:
                     alert_level = "low"
-                
+
                 # Check if alert already exists
                 success, existing_alerts, _ = await self.db.query_documents(
                     COLLECTIONS['low_stock_alerts'],
@@ -770,7 +771,7 @@ class InventoryService:
                         ('status', '==', 'active')
                     ]
                 )
-                
+
                 if not success or not existing_alerts:
                     # Create new alert
                     alert_data = {
@@ -783,8 +784,26 @@ class InventoryService:
                         'status': 'active',
                         'created_at': datetime.now()
                     }
-                    
+
                     await self.db.create_document(COLLECTIONS['low_stock_alerts'], alert_data)
+
+                    # Send notification to admins
+                    try:
+                        from ..services.notification_manager import notification_manager
+                        is_critical = alert_level in ["critical", "out_of_stock"] or item_data.get('is_critical', False)
+
+                        await notification_manager.notify_inventory_low_stock(
+                            inventory_id=inventory_id,
+                            item_name=item_data.get('item_name', 'Unknown Item'),
+                            current_stock=current_stock,
+                            reorder_level=reorder_level,
+                            building_id=item_data.get('building_id'),
+                            department=item_data.get('department'),
+                            is_critical=is_critical
+                        )
+                        logger.info(f"Sent low stock notification for item {item_data.get('item_name')}")
+                    except Exception as notif_error:
+                        logger.error(f"Failed to send low stock notification: {str(notif_error)}")
             else:
                 # Stock is above reorder level, resolve any existing alerts
                 success, existing_alerts, _ = await self.db.query_documents(
@@ -794,13 +813,13 @@ class InventoryService:
                         ('status', '==', 'active')
                     ]
                 )
-                
+
                 if success and existing_alerts:
                     for alert in existing_alerts:
                         alert_id = alert.get('_doc_id')
                         if alert_id:
                             await self.resolve_low_stock_alert(alert_id)
-                            
+
         except Exception as e:
             logger.error(f"Failed to check low stock alert for inventory {inventory_id}: {str(e)}")
     

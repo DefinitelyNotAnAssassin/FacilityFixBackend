@@ -58,6 +58,7 @@ class Inventory(BaseModel):
     description: Optional[str] = None
     is_critical: bool = Field(default=False)
     is_active: bool = Field(default=True)
+    recommended_on: List[str] = Field(default_factory=list)  # Locations where this item is recommended
     last_restocked_date: Optional[datetime] = None
     expiry_date: Optional[datetime] = None
     date_added: Optional[datetime] = None
@@ -155,6 +156,7 @@ class ConcernSlip(BaseModel):
     assigned_at: Optional[datetime] = None
     staff_assessment: Optional[str] = None  # Staff's assessment text
     staff_recommendation: Optional[str] = None  # Staff's recommendation
+    staff_profile: Optional[dict] = None  # Enriched staff profile data
     assessment_attachments: Optional[List[str]] = []  # Assessment file URLs
     assessed_by: Optional[str] = None  # staff user_id who did assessment
     assessed_at: Optional[datetime] = None
@@ -182,6 +184,7 @@ class JobService(BaseModel):
     estimated_hours: Optional[float] = None
     actual_hours: Optional[float] = None
     materials_used: Optional[List[str]] = []
+    staff_profile: Optional[dict] = None  # Enriched staff profile data
     staff_notes: Optional[str] = None
     completion_notes: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -257,7 +260,7 @@ class MaintenanceTask(BaseModel):
     maintenance_type: Optional[str] = None  # internal, external, ipm, epm
     scheduled_date: datetime
     scheduled_time_slot: Optional[str] = None  # "09:00-12:00"
-    estimated_duration: Optional[int] = None  # in minutes
+    estimated_duration: Optional[int] = Field(default=None, ge=1)  # in minutes, minimum 1
 
     # Execution tracking
     status: str = Field(default="scheduled")  # scheduled, assigned, in_progress, completed, cancelled, overdue

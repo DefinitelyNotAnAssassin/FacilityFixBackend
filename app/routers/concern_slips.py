@@ -6,12 +6,16 @@ from datetime import datetime
 from app.models.database_models import ConcernSlip
 from app.services.concern_slip_service import ConcernSlipService
 from app.auth.dependencies import get_current_user, require_role
+from app.services.user_id_service import UserIdService
 import logging 
 
 router = APIRouter(prefix="/concern-slips", tags=["concern-slips"])
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+logger = logging.basicConfig(level=logging.INFO)
+
+UserService = UserIdService()
 
 # Request Models
 class CreateConcernSlipRequest(BaseModel):
@@ -34,8 +38,7 @@ class AssignStaffRequest(BaseModel):
 
 class SubmitAssessmentRequest(BaseModel):
     assessment: str
-    recommendation: str
-    resolution_type: str  # work_order or job_service
+    resolution_type: str  # job_service, work_order - Required
     attachments: Optional[List[str]] = []
 
 class SetResolutionTypeRequest(BaseModel):
@@ -250,6 +253,7 @@ async def fetch_concern_slips(
 
     else: 
         concern_slips = await service.get_all_concern_slips() 
+        
     
     logger.info(f"[DEBUG] Found {len(concern_slips)} concern slips in database")
     return concern_slips
@@ -269,10 +273,13 @@ async def submit_concern_slip(
     The system automatically processes the description with AI for translation and categorization.
     """
     try:
+        
+        
         service = ConcernSlipService()
         concern_slip = await service.create_concern_slip(
             reported_by=current_user["uid"],
-            concern_data=request.dict()
+            concern_data=request.dict(),
+            
         )
         return concern_slip
 
@@ -470,8 +477,9 @@ async def submit_staff_assessment(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Submit assessment and recommendation for a concern slip (Staff only).
-    This is step 3 of the workflow after staff inspects the issue.
+    Submit assessment with resolution type for a concern slip (Staff only).
+    Required fields: assessment, resolution_type, attachments (optional)
+    Status will be set to 'sent' and resolution type will be recorded.
     """
     try:
         service = ConcernSlipService()
@@ -479,7 +487,6 @@ async def submit_staff_assessment(
             concern_slip_id=concern_slip_id,
             assessed_by=current_user["uid"],
             assessment=request.assessment,
-            recommendation=request.recommendation,
             resolution_type=request.resolution_type,
             attachments=request.attachments
         )
@@ -630,6 +637,9 @@ async def get_all_concern_slips(current_user: dict = Depends(get_current_user)):
         # Convert to dict format for API response
         result = []
         for slip in concern_slips:
+            reported_by = slip.reported_by 
+            reported_by = await UserService.get_user_profile(reported_by)
+            print("Reported By:", reported_by)
             slip_dict = {
                 "id": slip.id,
                 "formatted_id": slip.formatted_id,
@@ -640,7 +650,7 @@ async def get_all_concern_slips(current_user: dict = Depends(get_current_user)):
                 "priority": slip.priority,
                 "status": slip.status,
                 "unit_id": slip.unit_id,
-                "reported_by": slip.reported_by,
+                "reported_by": f"{reported_by.full_name if reported_by else 'Unknown'}",
                 "assigned_to": slip.assigned_to,
                 "created_at": slip.created_at.isoformat() if slip.created_at else None,
                 "updated_at": slip.updated_at.isoformat() if slip.updated_at else None,
@@ -833,8 +843,13 @@ async def get_next_concern_slip_id(current_user: dict = Depends(get_current_user
         
         return {"next_id": next_id, "success": True}
     except Exception as e:
+<<<<<<< master
         logger.error(f"[ConcernSlip] ❌ Error generating next concern slip ID: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to generate ID: {str(e)}"
         )
+=======
+        logger.error(f"Error generating next concern slip ID: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate ID: {str(e)}")
+>>>>>>> master

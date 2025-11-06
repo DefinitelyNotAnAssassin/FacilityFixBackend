@@ -6,6 +6,7 @@ import logging
 
 from ..models.database_models import Announcement
 from ..services.announcement_service import announcement_service
+from ..services.notification_manager import notification_manager
 from ..auth.dependencies import get_current_user, require_role
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,27 @@ async def create_announcement(
         
         if success:
             logger.info(f"Announcement created: {announcement_id} by {current_user['uid']}")
+
+            # Send notifications if requested
+            if request.send_notifications:
+                try:
+                    await notification_manager.notify_announcement_published(
+                        announcement_id=announcement_id,
+                        title=request.title,
+                        content=request.content,
+                        target_audience=request.audience,
+                        target_roles=request.target_roles,
+                        target_departments=request.target_departments,
+                        target_user_ids=request.target_user_ids,
+                        building_id=request.building_id,
+                        priority=request.priority_level,
+                        announcement_type=request.type
+                    )
+                    logger.info(f"Notifications sent for announcement {announcement_id}")
+                except Exception as notif_error:
+                    logger.error(f"Failed to send notifications for announcement {announcement_id}: {str(notif_error)}")
+                    # Don't fail the whole request if notifications fail
+
             return {
                 "success": True,
                 "announcement_id": announcement_id,
@@ -288,6 +310,29 @@ async def update_announcement(
         
         if success:
             logger.info(f"Announcement {announcement_id} updated by {current_user['uid']}")
+
+            # Send notifications if requested
+            if request.notify_changes:
+                try:
+                    # Get the updated announcement to send notifications
+                    announcement = await announcement_service.get_announcement_by_id(announcement_id)
+                    if announcement:
+                        await notification_manager.notify_announcement_published(
+                            announcement_id=announcement_id,
+                            title=f"Updated: {announcement.get('title', 'Announcement')}",
+                            content=announcement.get('content', ''),
+                            target_audience=announcement.get('audience', 'all'),
+                            target_roles=announcement.get('target_roles'),
+                            target_departments=announcement.get('target_departments'),
+                            target_user_ids=announcement.get('target_user_ids'),
+                            building_id=announcement.get('building_id'),
+                            priority=announcement.get('priority_level', 'normal'),
+                            announcement_type=announcement.get('type', 'general')
+                        )
+                        logger.info(f"Update notifications sent for announcement {announcement_id}")
+                except Exception as notif_error:
+                    logger.error(f"Failed to send update notifications: {str(notif_error)}")
+
             return {
                 "success": True,
                 "message": "Announcement updated successfully",
@@ -386,16 +431,23 @@ async def rebroadcast_announcement(
         
         if not announcement.get('is_active', True):
             raise HTTPException(status_code=400, detail="Cannot rebroadcast inactive announcement")
-        
-        # Rebroadcast the announcement
-        await announcement_service._broadcast_announcement(
-            announcement,
-            send_notifications=True,
-            send_email=send_email
+
+        # Rebroadcast the announcement using notification manager
+        await notification_manager.notify_announcement_published(
+            announcement_id=announcement_id,
+            title=announcement.get('title', 'Announcement'),
+            content=announcement.get('content', ''),
+            target_audience=announcement.get('audience', 'all'),
+            target_roles=announcement.get('target_roles'),
+            target_departments=announcement.get('target_departments'),
+            target_user_ids=announcement.get('target_user_ids'),
+            building_id=announcement.get('building_id'),
+            priority=announcement.get('priority_level', 'normal'),
+            announcement_type=announcement.get('type', 'general')
         )
-        
+
         logger.info(f"Announcement {announcement_id} rebroadcast by {current_user['uid']}")
-        
+
         return {
             "success": True,
             "message": "Announcement rebroadcast successfully",
