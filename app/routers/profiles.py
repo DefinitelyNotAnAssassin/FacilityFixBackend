@@ -22,30 +22,6 @@ class ProfileHistoryResponse(BaseModel):
     changes: Dict[str, Any]
     previous_values: Dict[str, Any]
 
-@router.get("/{user_id}/complete")
-async def get_complete_profile(
-    user_id: str,
-    current_user: dict = Depends(require_staff_or_admin)
-):
-    """Get complete user profile with Firebase data and completion score"""
-    try:
-        success, profile_data, error = await profile_service.get_complete_profile(user_id)
-        
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Profile not found: {error}"
-            )
-        
-        return profile_data
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving complete profile: {str(e)}"
-        )
 
 @router.get("/me/complete")
 async def get_my_complete_profile(current_user: dict = Depends(get_current_user)):
@@ -75,6 +51,9 @@ async def get_my_complete_profile(current_user: dict = Depends(get_current_user)
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving profile: {str(e)}"
         )
+
+
+
 
 @router.put("/{user_id}/update")
 async def update_profile_with_history(

@@ -165,6 +165,7 @@ class ConcernSlip(BaseModel):
     submitted_at: Optional[str] = None  # ISO timestamp when request was submitted
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    
 
 # JobService Model (modified from WorkOrder)
 class JobService(BaseModel):

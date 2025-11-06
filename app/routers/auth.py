@@ -292,6 +292,7 @@ async def get_current_user_info(current_user: Dict[str, Any] = Depends(get_curre
             "unit_id": current_user.get("unit_id"),
             "tenant_id": profile.get("user_id"),
             "staff_department": current_user.get("staff_department"),  # ✅ expose only staff_department
+            "profile_image_url": profile.get("profile_image_url"),
         }
 
         if prof_ok and profile:
@@ -306,6 +307,7 @@ async def get_current_user_info(current_user: Dict[str, Any] = Depends(get_curre
                 "building_unit": profile.get("building_unit"),
                 "created_at": profile.get("created_at"),
                 "updated_at": profile.get("updated_at"),
+                "profile_image_url": profile.get("profile_image_url"),
             })
 
         return info

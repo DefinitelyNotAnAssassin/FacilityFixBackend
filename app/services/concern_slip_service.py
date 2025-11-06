@@ -114,6 +114,14 @@ class ConcernSlipService:
     async def get_concern_slip(self, concern_slip_id: str) -> Optional[ConcernSlip]:
         """Get concern slip by ID"""
         success, concern_data, error = await self.db.get_document("concern_slips", concern_slip_id)
+        filtered_attachments = [] 
+        
+        attachments = await database_service.query_documents("file_attachments", [("entity_id", "==", concern_slip_id)])
+        for attachment in attachments[1]:
+           filtered_attachments.append(attachment['download_url'])
+
+        concern_data['attachments'] = filtered_attachments
+
         
         if not success or not concern_data:
             success, results, error = await self.db.query_documents("concern_slips", [("id", "==", concern_slip_id)])
