@@ -3,8 +3,7 @@ from pydantic import ValidationError
 from app.models.database_models import (
     Building, Unit, UserProfile, Equipment, Inventory,
     ConcernSlip, JobService, WorkOrderPermit, MaintenanceTask, Announcement,
-    StatusHistory, Feedback, Counter, Notification, FileAttachment  # Added Notification and FileAttachment models
-    StatusHistory, Feedback, Counter, Notification, InventoryRequest # Added Notification model
+    StatusHistory, Feedback, Counter, Notification, FileAttachment, InventoryRequest  # Added InventoryRequest   model
 )
 
 class SchemaValidator:

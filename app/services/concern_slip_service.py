@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 UserIdService = UserIdService()
 class ConcernSlipService:
-    def __init__(self):fetch
+    def __init__(self):
         self.db = DatabaseService()
         self.ai_service = AIIntegrationService()
         self.notification_manager = NotificationManager()
@@ -139,14 +139,8 @@ class ConcernSlipService:
         concern_data = concern_data.stream()
         
         slips = []
-        
-        for slip in concern_data:
-            curr = slip._data  # transform DocumentSnapshot from class to dict
-            curr = ConcernSlip(**curr)  # feed to the model
-            
-            if curr:
-        slips = [] 
-        
+
+
         for slip in concern_data: 
             curr = slip._data  # transform DocumentSnapshot from class to dict 
             if curr.get('status') == "completed": 
@@ -663,7 +657,7 @@ class ConcernSlipService:
             # Delete file from storage
             success = await file_storage_service.delete_file(
                 file_id=file_id,
-                user_id=user_id"
+                user_id=user_id
             )
             
             if success:
@@ -689,4 +683,3 @@ class ConcernSlipService:
         except Exception as e:
             logger.error(f"❌ Failed to delete attachment: {str(e)}")
             raise Exception(f"Failed to delete attachment: {str(e)}")
-        return ConcernSlip(**updated_concern)

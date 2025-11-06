@@ -13,7 +13,6 @@ router = APIRouter(prefix="/concern-slips", tags=["concern-slips"])
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
-logger = logging.basicConfig(level=logging.INFO)
 
 UserService = UserIdService()
 
@@ -245,7 +244,6 @@ async def fetch_concern_slips(
     current_user: dict = Depends(get_current_user),
 ): 
     service = ConcernSlipService()
-    logger.info(f"[DEBUG] Fetching concern slips for user: {current_user.get('email')} with role: {current_user.get('role')}")
     print(current_user)
 
     if current_user and current_user.get('role') == 'staff': 
@@ -843,13 +841,5 @@ async def get_next_concern_slip_id(current_user: dict = Depends(get_current_user
         
         return {"next_id": next_id, "success": True}
     except Exception as e:
-<<<<<<< master
-        logger.error(f"[ConcernSlip] ❌ Error generating next concern slip ID: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to generate ID: {str(e)}"
-        )
-=======
         logger.error(f"Error generating next concern slip ID: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate ID: {str(e)}")
->>>>>>> master
