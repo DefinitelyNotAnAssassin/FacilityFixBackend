@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Query
+from fastapi import APIRouter, HTTPException, status, Depends, Query, UploadFile, File, Path
 from typing import Optional, Dict, Any
 from ..services.profile_service import profile_service
 from ..models.user import UserUpdate, UserProfileComplete
-from ..auth.dependencies import require_admin, require_staff_or_admin, get_current_user
+from ..auth.dependencies import require_admin, require_staff_or_admin, get_current_user, require_self_or_admin
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/profiles", tags=["profile-management"])
@@ -52,6 +52,12 @@ async def get_my_complete_profile(current_user: dict = Depends(get_current_user)
     """Get current user's complete profile"""
     try:
         user_id = current_user.get("uid")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not verify user identity"
+            )
+            
         success, profile_data, error = await profile_service.get_complete_profile(user_id)
         
         if not success:
@@ -267,4 +273,264 @@ async def get_profile_completion(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error checking profile completion: {str(e)}"
+        )
+
+# Add endpoints to match frontend paths
+@router.post("/me/photo")
+async def upload_my_photo(
+    current_user: dict = Depends(get_current_user),
+    file: Optional[UploadFile] = File(None)
+):
+    """
+    Upload current user's profile photo.
+    This endpoint matches the frontend's expected path.
+    """
+    user_id = current_user.get("uid")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not verify user identity"
+        )
+    if file is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No file uploaded. Please provide a file in the 'file' field of the form-data."
+        )
+    success, new_image_url, error = await profile_service.update_profile_image(
+        user_id=user_id,
+        file=file,
+        updated_by=user_id
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error
+        )
+
+    return {"message": "Profile photo updated successfully", "profile_image_url": new_image_url}
+
+# Alias for the new photo endpoint to maintain backward compatibility
+@router.post("/{user_id}/photo")
+async def upload_user_photo(
+    user_id: str,
+    current_user: dict = Depends(get_current_user),
+    file: UploadFile = File(...)
+):
+    """
+    Upload a user's profile photo (alias endpoint).
+    Users can only upload their own photo unless they are admin.
+    """
+    user_role = current_user.get("role")
+    current_user_id = current_user.get("uid")
+    
+    if current_user_id != user_id and user_role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only upload your own profile photo"
+        )
+
+    success, new_image_url, error = await profile_service.update_profile_image(
+        user_id=user_id,
+        file=file,
+        updated_by=current_user_id
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error
+        )
+
+    return {"message": "Profile photo updated successfully", "profile_image_url": new_image_url}
+
+# Keep the original endpoint for backward compatibility
+@router.put("/{user_id}/profile-image")
+async def update_profile_image_legacy(
+    user_id: str = Path(..., description="The user ID whose profile image is being updated"),
+    current_user: dict = Depends(get_current_user),
+    file: UploadFile = File(...)
+):
+    """
+    Legacy endpoint for updating a user's profile image.
+    Redirects to the new upload_user_photo endpoint.
+    """
+    return await upload_user_photo(user_id, current_user, file)
+
+@router.put("/{user_id}/profile-image", response_model=dict)
+async def update_profile_image(
+    user_id: str = Path(..., description="The user ID whose profile image is being updated"),
+    current_user: dict = Depends(get_current_user),
+    file: UploadFile = File(...)
+):
+    """
+    Update a user's profile image.
+    Users can update their own image, and admins can update any user's image.
+    """
+    try:
+        # Check if user is accessing their own data or is an admin
+        user_role = current_user.get("role")
+        current_user_id = current_user.get("uid")
+        
+        if current_user_id != user_id and user_role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You can only update your own profile image. Current user: {current_user_id}, requested user: {user_id}"
+            )
+        
+        success, new_image_url, error = await profile_service.update_profile_image(
+            user_id=user_id,
+            file=file,
+            updated_by=current_user.get("uid")
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error
+            )
+
+        return {"message": "Profile image updated successfully", "profile_image_url": new_image_url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating profile image: {str(e)}"
+        )
+
+@router.post("/{user_id}/documents", response_model=dict)
+async def upload_profile_document(
+    user_id: str = Path(..., description="The user ID to upload document for"),
+    current_user: dict = Depends(get_current_user),
+    file: UploadFile = File(...),
+    document_type: str = Query(..., description="Type of document being uploaded (e.g., id, contract, certification)")
+):
+    """
+    Upload a document to a user's profile.
+    Users can upload their own documents, and admins can upload documents for any user.
+    """
+    try:
+        # Check if user is accessing their own data or is an admin
+        user_role = current_user.get("role")
+        current_user_id = current_user.get("uid")
+        
+        if current_user_id != user_id and user_role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You can only upload documents to your own profile"
+            )
+        
+        success, doc_metadata, error = await profile_service.upload_profile_document(
+            user_id=user_id,
+            file=file,
+            document_type=document_type,
+            uploaded_by=current_user.get("uid")
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error
+            )
+
+        return {
+            "message": "Document uploaded successfully", 
+            "document_id": doc_metadata.get("id"),
+            "document_url": doc_metadata.get("public_url")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading document: {str(e)}"
+        )
+
+@router.get("/{user_id}/documents", response_model=dict)
+async def list_profile_documents(
+    user_id: str = Path(..., description="The user ID to list documents for"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    List all documents attached to a user's profile.
+    Users can view their own documents, and admins can view any user's documents.
+    """
+    try:
+        # Check if user is accessing their own data or is an admin
+        user_role = current_user.get("role")
+        current_user_id = current_user.get("uid")
+        
+        if current_user_id != user_id and user_role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You can only view your own documents"
+            )
+        
+        success, documents, error = await profile_service.list_profile_documents(user_id)
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error
+            )
+
+        return {
+            "user_id": user_id,
+            "documents": documents
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error listing documents: {str(e)}"
+        )
+
+@router.delete("/{user_id}/documents/{document_id}", response_model=dict)
+async def delete_profile_document(
+    user_id: str = Path(..., description="The user ID the document belongs to"),
+    document_id: str = Path(..., description="The ID of the document to delete"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a document from a user's profile.
+    Users can delete their own documents, and admins can delete any user's documents.
+    """
+    try:
+        # Check if user is accessing their own data or is an admin
+        user_role = current_user.get("role")
+        current_user_id = current_user.get("uid")
+        
+        if current_user_id != user_id and user_role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You can only delete your own documents"
+            )
+        
+        success, error = await profile_service.delete_profile_document(
+            user_id=user_id,
+            document_id=document_id,
+            deleted_by=current_user.get("uid")
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error
+            )
+
+        return {
+            "message": "Document deleted successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting document: {str(e)}"
         )

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -324,3 +324,101 @@ async def get_all_job_services(
         return job_services
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get job services: {str(e)}")
+
+# File attachment endpoints for job services
+@router.post("/{job_service_id}/attachments")
+async def upload_job_service_attachment(
+    job_service_id: str,
+    current_user: dict = Depends(get_current_user),
+    file: UploadFile = File(...)
+):
+    """
+    Upload an attachment to a job service.
+    - Staff can attach files to their assigned job services
+    - Admin can attach files to any job service
+    """
+    try:
+        service = JobServiceService()
+        file_metadata = await service.upload_attachment(
+            job_service_id=job_service_id,
+            file=file,
+            uploaded_by=current_user.get("uid")
+        )
+        
+        return {
+            "message": "File uploaded successfully",
+            "attachment_id": file_metadata.get('id'),
+            "file_url": file_metadata.get('public_url')
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
+
+@router.get("/{job_service_id}/attachments")
+async def list_job_service_attachments(
+    job_service_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """List all attachments for a job service"""
+    try:
+        service = JobServiceService()
+        attachments = await service.list_attachments(
+            job_service_id=job_service_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {
+            "job_service_id": job_service_id,
+            "attachments": attachments
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list attachments: {str(e)}")
+
+@router.get("/{job_service_id}/attachments/{file_id}")
+async def get_job_service_attachment_url(
+    job_service_id: str,
+    file_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get a signed URL for accessing a specific attachment"""
+    try:
+        service = JobServiceService()
+        signed_url = await service.get_attachment_url(
+            job_service_id=job_service_id,
+            file_id=file_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {"url": signed_url}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get attachment URL: {str(e)}")
+
+@router.delete("/{job_service_id}/attachments/{file_id}")
+async def delete_job_service_attachment(
+    job_service_id: str,
+    file_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a specific attachment from a job service"""
+    try:
+        service = JobServiceService()
+        success = await service.delete_attachment(
+            job_service_id=job_service_id,
+            file_id=file_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {"message": "Attachment deleted successfully"}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {str(e)}")

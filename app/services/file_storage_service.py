@@ -10,9 +10,9 @@ from google.cloud.exceptions import NotFound
 from fastapi import HTTPException, UploadFile
 import logging
 
-from ..core.firebase_init import is_firebase_available
-from ..database.firestore_client import get_firestore_client
+from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
+from .firebase_storage_init import get_storage_bucket, is_storage_available
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,11 @@ class FileStorageService:
     """
     
     def __init__(self):
-        self.bucket = None
-        if is_firebase_available():
-            try:
-                self.bucket = ""
-                logger.info("✅ Firebase Storage initialized successfully")
-            except Exception as e:
-                logger.error(f"❌ Failed to initialize Firebase Storage: {e}")
+        self.bucket = get_storage_bucket()
+        if self.bucket:
+            logger.info(f"✅ Firebase Storage initialized successfully (gs://{self.bucket.name})")
+        else:
+            logger.warning("⚠️ Firebase Storage not available - file operations will fail")
 
         # Define allowed file types and size limits
         self.allowed_image_types = {
@@ -47,8 +45,17 @@ class FileStorageService:
     
     def _validate_file(self, file: UploadFile, file_type: str = "any") -> bool:
         """Validate file type and size"""
-        if not file.content_type:
-            raise HTTPException(status_code=400, detail="Unable to determine file type")
+        # Try to determine content type. If missing or generic, attempt to guess from filename
+        content_type = file.content_type
+        if not content_type or content_type in ("application/octet-stream", "binary/octet-stream", "text/plain"):
+            guessed = mimetypes.guess_type(file.filename)[0]
+            if guessed:
+                content_type = guessed
+            else:
+                # Fall back to raising an error when we can't determine type
+                raise HTTPException(status_code=400, detail="Unable to determine file type")
+        # normalize
+        content_type = content_type.lower()
         
         # Check file size
         file.file.seek(0, 2)  # Seek to end
@@ -56,9 +63,9 @@ class FileStorageService:
         file.file.seek(0)  # Reset to beginning
         
         if file_type == "image":
-            if file.content_type not in self.allowed_image_types:
+            if content_type not in self.allowed_image_types:
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail=f"Invalid image type. Allowed: {', '.join(self.allowed_image_types)}"
                 )
             if file_size > self.max_image_size:
@@ -67,9 +74,9 @@ class FileStorageService:
                     detail=f"Image too large. Maximum size: {self.max_image_size / (1024*1024):.1f}MB"
                 )
         elif file_type == "document":
-            if file.content_type not in self.allowed_document_types:
+            if content_type not in self.allowed_document_types:
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail=f"Invalid document type. Allowed: {', '.join(self.allowed_document_types)}"
                 )
             if file_size > self.max_file_size:
@@ -79,7 +86,7 @@ class FileStorageService:
                 )
         else:  # any file type
             allowed_types = self.allowed_image_types.union(self.allowed_document_types)
-            if file.content_type not in allowed_types:
+            if content_type not in allowed_types:
                 raise HTTPException(
                     status_code=400, 
                     detail="Invalid file type"
@@ -150,7 +157,9 @@ class FileStorageService:
             # Upload to Firebase Storage
             blob = self.bucket.blob(file_path)
             
-            # Set metadata
+            download_token = str(uuid.uuid4())
+            
+            # Set metadata with download token
             blob.metadata = {
                 'uploaded_by': uploaded_by,
                 'entity_type': entity_type,
@@ -158,18 +167,20 @@ class FileStorageService:
                 'original_filename': file.filename,
                 'file_type': file_type,
                 'description': description or '',
-                'upload_timestamp': datetime.now().isoformat()
+                'upload_timestamp': datetime.now().isoformat(),
+                'firebaseStorageDownloadTokens': download_token  # Add download token
             }
             
             # Upload file content
             file_content = await file.read()
             blob.upload_from_string(file_content, content_type=file.content_type)
             
-            # Make file accessible with signed URL (valid for 1 hour by default)
-            signed_url = blob.generate_signed_url(
-                expiration=datetime.now() + timedelta(hours=1),
-                method='GET'
-            )
+            import urllib.parse
+            encoded_path = urllib.parse.quote(file_path, safe='')
+            download_url = f"https://firebasestorage.googleapis.com/v0/b/{self.bucket.name}/o/{encoded_path}?alt=media&token={download_token}"
+            
+            logger.info(f"✅ File uploaded successfully: {file_path}")
+            logger.info(f"✅ Download URL with token: {download_url}")
             
             # Store file metadata in Firestore
             file_metadata = {
@@ -184,18 +195,26 @@ class FileStorageService:
                 'file_type': file_type,
                 'description': description,
                 'storage_url': f"gs://{self.bucket.name}/{file_path}",
-                'public_url': signed_url,
+                'download_url': download_url,  # Store the token-based URL
+                'download_token': download_token,  # Store token for future reference
                 'is_active': True,
                 'created_at': datetime.now(),
                 'updated_at': datetime.now()
             }
             
-            # Save metadata to Firestore
-            db = get_firestore_client()
-            doc_ref = db.collection('file_attachments').document(file_metadata['id'])
-            doc_ref.set(file_metadata)
+            # Save metadata to Firestore using database service
+            result = await database_service.create_document(
+                'file_attachments', 
+                file_metadata,
+                document_id=file_metadata['id']
+            )
             
-            logger.info(f"✅ File uploaded successfully: {file_path}")
+            if isinstance(result, tuple) and len(result) >= 2:
+                success, error = result[:2]
+                if not success:
+                    logger.error(f"❌ Failed to save file metadata: {error}")
+                    raise Exception(f"Failed to save file metadata: {error}")
+            
             return file_metadata
             
         except Exception as e:
@@ -219,15 +238,11 @@ class FileStorageService:
             raise HTTPException(status_code=500, detail="File storage not available")
         
         try:
-            # Get file metadata
-            db = get_firestore_client()
-            doc_ref = db.collection('file_attachments').document(file_id)
-            doc = doc_ref.get()
+            # Get file metadata using database service
+            success, file_data, error = await database_service.get_document('file_attachments', file_id)
             
-            if not doc.exists:
-                raise HTTPException(status_code=404, detail="File not found")
-            
-            file_data = doc.to_dict()
+            if not success or not file_data:
+                raise HTTPException(status_code=404, detail=f"File not found: {error if error else 'No data'}")
             
             # Check access permissions
             if not await self._check_file_access(file_data, user_id):
@@ -258,26 +273,33 @@ class FileStorageService:
         - Admins: Full access to all files
         """
         try:
-            # Get user profile to determine role
-            db = get_firestore_client()
-            user_doc = db.collection(COLLECTIONS['user_profiles']).document(user_id).get()
+            uploaded_by = file_data.get('uploaded_by')
+            entity_type = file_data.get('entity_type')
+            entity_id = file_data.get('entity_id')
             
-            if not user_doc.exists:
+            if uploaded_by == user_id:
+                logger.info(f"[Access] ✅ User {user_id} accessing their own file")
+                return True
+            
+            if entity_type == "attachments" and entity_id == "temp":
+                logger.info(f"[Access] ✅ Allowing access to temporary file for user {user_id}")
+                return True
+            
+            # Get user profile to determine role
+            success, user_data, error = await database_service.get_document(
+                COLLECTIONS['user_profiles'], 
+                user_id
+            )
+            
+            if not success or not user_data:
+                logger.warning(f"[Access] ❌ User profile not found for {user_id}")
                 return False
             
-            user_data = user_doc.to_dict()
             user_role = user_data.get('role', '').lower()
             
             # Admin has full access
             if user_role == 'admin':
-                return True
-            
-            entity_type = file_data.get('entity_type')
-            entity_id = file_data.get('entity_id')
-            uploaded_by = file_data.get('uploaded_by')
-            
-            # User can always access files they uploaded
-            if uploaded_by == user_id:
+                logger.info(f"[Access] ✅ Admin {user_id} has full access")
                 return True
             
             # Role-based access control
@@ -285,25 +307,31 @@ class FileStorageService:
                 # Tenants can access their own repair request attachments
                 if entity_type in ['repair_requests', 'concern_slips']:
                     # Check if the concern slip belongs to the tenant
-                    concern_doc = db.collection(COLLECTIONS['concern_slips']).document(entity_id).get()
-                    if concern_doc.exists:
-                        concern_data = concern_doc.to_dict()
+                    success, concern_data, _ = await database_service.get_document(
+                        COLLECTIONS['concern_slips'],
+                        entity_id
+                    )
+                    if success and concern_data:
                         return concern_data.get('reported_by') == user_id
                 
                 # Tenants can access public announcements
                 elif entity_type == 'announcements':
-                    announcement_doc = db.collection(COLLECTIONS['announcements']).document(entity_id).get()
-                    if announcement_doc.exists:
-                        announcement_data = announcement_doc.to_dict()
+                    success, announcement_data, _ = await database_service.get_document(
+                        COLLECTIONS['announcements'],
+                        entity_id
+                    )
+                    if success and announcement_data:
                         audience = announcement_data.get('audience', 'all')
                         return audience in ['all', 'tenants']
             
             elif user_role == 'staff':
                 # Staff can access files related to their assigned tasks
                 if entity_type in ['maintenance_tasks', 'job_services']:
-                    task_doc = db.collection(COLLECTIONS[entity_type]).document(entity_id).get()
-                    if task_doc.exists:
-                        task_data = task_doc.to_dict()
+                    success, task_data, _ = await database_service.get_document(
+                        COLLECTIONS[entity_type],
+                        entity_id
+                    )
+                    if success and task_data:
                         return task_data.get('assigned_to') == user_id
                 
                 # Staff can access inventory and equipment files
@@ -312,9 +340,11 @@ class FileStorageService:
                 
                 # Staff can access announcements for staff
                 elif entity_type == 'announcements':
-                    announcement_doc = db.collection(COLLECTIONS['announcements']).document(entity_id).get()
-                    if announcement_doc.exists:
-                        announcement_data = announcement_doc.to_dict()
+                    success, announcement_data, _ = await database_service.get_document(
+                        COLLECTIONS['announcements'],
+                        entity_id
+                    )
+                    if success and announcement_data:
                         audience = announcement_data.get('audience', 'all')
                         return audience in ['all', 'staff']
             
@@ -338,31 +368,34 @@ class FileStorageService:
             List of file metadata
         """
         try:
-            db = get_firestore_client()
+            # Query files for the entity using database service
+            success, documents, error = await database_service.query_collection(
+                'file_attachments',
+                filters=[
+                    ('entity_type', '==', entity_type),
+                    ('entity_id', '==', entity_id),
+                    ('is_active', '==', True)
+                ]
+            )
             
-            # Query files for the entity
-            files_ref = db.collection('file_attachments')
-            query = files_ref.where('entity_type', '==', entity_type)\
-                            .where('entity_id', '==', entity_id)\
-                            .where('is_active', '==', True)
+            if not success:
+                logger.error(f"❌ Error querying files: {error}")
+                return []
             
             files = []
-            for doc in query.stream():
-                file_data = doc.to_dict()
-                file_data['id'] = doc.id
-                
+            for file_data in documents:
                 # Check access permissions
                 if await self._check_file_access(file_data, user_id):
                     # Remove sensitive data
                     safe_file_data = {
-                        'id': file_data['id'],
-                        'original_filename': file_data['original_filename'],
-                        'file_size': file_data['file_size'],
-                        'content_type': file_data['content_type'],
-                        'file_type': file_data['file_type'],
+                        'id': file_data.get('id'),
+                        'original_filename': file_data.get('original_filename'),
+                        'file_size': file_data.get('file_size'),
+                        'content_type': file_data.get('content_type'),
+                        'file_type': file_data.get('file_type'),
                         'description': file_data.get('description', ''),
-                        'created_at': file_data['created_at'],
-                        'uploaded_by': file_data['uploaded_by']
+                        'created_at': file_data.get('created_at'),
+                        'uploaded_by': file_data.get('uploaded_by')
                     }
                     files.append(safe_file_data)
             
@@ -387,25 +420,19 @@ class FileStorageService:
             raise HTTPException(status_code=500, detail="File storage not available")
         
         try:
-            # Get file metadata
-            db = get_firestore_client()
-            doc_ref = db.collection('file_attachments').document(file_id)
-            doc = doc_ref.get()
+            # Get file metadata using database service
+            success, file_data, error = await database_service.get_document('file_attachments', file_id)
             
-            if not doc.exists:
-                raise HTTPException(status_code=404, detail="File not found")
-            
-            file_data = doc.to_dict()
+            if not success or not file_data:
+                raise HTTPException(status_code=404, detail=f"File not found: {error if error else 'No data'}")
             
             # Check if user can delete (admin or file owner)
-            user_doc = db.collection(COLLECTIONS['user_profiles']).document(user_id).get()
-            if user_doc.exists:
-                user_data = user_doc.to_dict()
-                user_role = user_data.get('role', '').lower()
-                
-                if user_role != 'admin' and file_data.get('uploaded_by') != user_id:
-                    raise HTTPException(status_code=403, detail="Access denied")
-            else:
+            success, user_data, error = await database_service.get_document(COLLECTIONS['user_profiles'], user_id)
+            if not success or not user_data:
+                raise HTTPException(status_code=403, detail="Access denied")
+            
+            user_role = user_data.get('role', '').lower()
+            if user_role != 'admin' and file_data.get('uploaded_by') != user_id:
                 raise HTTPException(status_code=403, detail="Access denied")
             
             # Delete from Firebase Storage
@@ -413,11 +440,18 @@ class FileStorageService:
             blob.delete()
             
             # Mark as inactive in Firestore (soft delete)
-            doc_ref.update({
-                'is_active': False,
-                'deleted_at': datetime.now(),
-                'deleted_by': user_id
-            })
+            success, error = await database_service.update_document(
+                'file_attachments',
+                file_id,
+                {
+                    'is_active': False,
+                    'deleted_at': datetime.now(),
+                    'deleted_by': user_id
+                }
+            )
+            
+            if not success:
+                raise HTTPException(status_code=500, detail=f"Failed to update file status: {error}")
             
             logger.info(f"✅ File deleted successfully: {file_data['file_path']}")
             return True

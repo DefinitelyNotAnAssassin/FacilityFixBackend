@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
+from fastapi import File, UploadFile
 from pydantic import BaseModel
 from datetime import datetime
 from app.models.database_models import ConcernSlip
@@ -8,11 +9,10 @@ from app.auth.dependencies import get_current_user, require_role
 from app.services.user_id_service import UserIdService
 import logging 
 
-
-
-
 router = APIRouter(prefix="/concern-slips", tags=["concern-slips"])
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 logger = logging.basicConfig(level=logging.INFO)
 
 UserService = UserIdService()
@@ -48,11 +48,204 @@ class SetResolutionTypeRequest(BaseModel):
 class AIReprocessRequest(BaseModel):
     force_translate: bool = False
 
+@router.post("/{concern_slip_id}/attachments")
+async def upload_concern_slip_attachment(
+    concern_slip_id: str,
+    current_user: dict = Depends(get_current_user),
+    file: UploadFile = File(...)
+):
+    """
+    Upload an attachment to a concern slip.
+    - Tenants can only attach files to their own pending concern slips
+    - Staff can attach assessment files to their assigned concern slips
+    - Admin can attach files to any concern slip
+    """
+    try:
+        concern_service = ConcernSlipService()
+        concern_slip = await concern_service.get_concern_slip(concern_slip_id)
+        
+        if not concern_slip:
+            raise HTTPException(status_code=404, detail="Concern slip not found")
+        
+        # Check permissions
+        user_role = current_user.get("role", "").lower()
+        user_id = current_user.get("uid")
+        
+        # Tenant can only upload to their own pending slips
+        if user_role == "tenant":
+            if concern_slip.reported_by != user_id:
+                raise HTTPException(status_code=403, detail="You can only upload attachments to your own concern slips")
+            if concern_slip.status != "pending":
+                raise HTTPException(status_code=400, detail="Attachments can only be added to pending concern slips")
+                
+        # Staff can only upload to their assigned slips during assessment
+        elif user_role == "staff":
+            if concern_slip.assigned_to != user_id:
+                raise HTTPException(status_code=403, detail="You can only upload attachments to concern slips assigned to you")
+            if concern_slip.status != "assigned":
+                raise HTTPException(status_code=400, detail="Staff can only add attachments during assessment phase")
+                
+        # Admin can upload to any slip
+        elif user_role != "admin":
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        file_metadata = await concern_service.upload_attachment(
+            concern_slip_id=concern_slip_id,
+            file=file,
+            uploaded_by=current_user.get("uid")
+        )
+        
+        return {
+            "message": "File uploaded successfully",
+            "attachment_id": file_metadata.get('id'),
+            "file_url": file_metadata.get('public_url')
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
+
+@router.get("/{concern_slip_id}/attachments")
+async def list_concern_slip_attachments(
+    concern_slip_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    List all attachments for a concern slip.
+    - Tenants can only view their own concern slip attachments
+    - Staff can view attachments for assigned concern slips
+    - Admin can view all attachments
+    """
+    try:
+        concern_service = ConcernSlipService()
+        concern_slip = await concern_service.get_concern_slip(concern_slip_id)
+        
+        if not concern_slip:
+            raise HTTPException(status_code=404, detail="Concern slip not found")
+        
+        # Check permissions
+        user_role = current_user.get("role", "").lower()
+        user_id = current_user.get("uid")
+        
+        if user_role == "tenant" and concern_slip.reported_by != user_id:
+            raise HTTPException(status_code=403, detail="You can only view attachments for your own concern slips")
+            
+        if user_role == "staff" and concern_slip.assigned_to != user_id:
+            raise HTTPException(status_code=403, detail="You can only view attachments for concern slips assigned to you")
+            
+        attachments = await concern_service.list_attachments(
+            concern_slip_id=concern_slip_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {
+            "concern_slip_id": concern_slip_id,
+            "attachments": attachments
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list attachments: {str(e)}")
+
+@router.get("/{concern_slip_id}/attachments/{file_id}")
+async def get_attachment_url(
+    concern_slip_id: str,
+    file_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get a signed URL for accessing a specific attachment.
+    Access rules:
+    - Tenants can access their own concern slip attachments
+    - Staff can access attachments for assigned concern slips
+    - Admin can access all attachments
+    """
+    try:
+        concern_service = ConcernSlipService()
+        concern_slip = await concern_service.get_concern_slip(concern_slip_id)
+        
+        if not concern_slip:
+            raise HTTPException(status_code=404, detail="Concern slip not found")
+        
+        # Check permissions
+        user_role = current_user.get("role", "").lower()
+        user_id = current_user.get("uid")
+        
+        if user_role == "tenant" and concern_slip.reported_by != user_id:
+            raise HTTPException(status_code=403, detail="You can only access attachments for your own concern slips")
+            
+        if user_role == "staff" and concern_slip.assigned_to != user_id:
+            raise HTTPException(status_code=403, detail="You can only access attachments for concern slips assigned to you")
+        
+        signed_url = await concern_service.get_attachment_url(
+            concern_slip_id=concern_slip_id,
+            file_id=file_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {"url": signed_url}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get attachment URL: {str(e)}")
+
+@router.delete("/{concern_slip_id}/attachments/{file_id}")
+async def delete_attachment(
+    concern_slip_id: str,
+    file_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a specific attachment from a concern slip.
+    Delete rules:
+    - Tenants can only delete their own pending concern slip attachments
+    - Staff cannot delete attachments
+    - Admin can delete any attachment
+    """
+    try:
+        concern_service = ConcernSlipService()
+        concern_slip = await concern_service.get_concern_slip(concern_slip_id)
+        
+        if not concern_slip:
+            raise HTTPException(status_code=404, detail="Concern slip not found")
+        
+        # Check permissions
+        user_role = current_user.get("role", "").lower()
+        user_id = current_user.get("uid")
+        
+        # Only tenants and admins can delete attachments
+        if user_role == "staff":
+            raise HTTPException(status_code=403, detail="Staff members cannot delete attachments")
+            
+        # Tenants can only delete their own pending concern slip attachments
+        if user_role == "tenant":
+            if concern_slip.reported_by != user_id:
+                raise HTTPException(status_code=403, detail="You can only delete attachments from your own concern slips")
+            if concern_slip.status != "pending":
+                raise HTTPException(status_code=400, detail="Attachments can only be deleted from pending concern slips")
+        
+        success = await concern_service.delete_attachment(
+            concern_slip_id=concern_slip_id,
+            file_id=file_id,
+            user_id=current_user.get("uid")
+        )
+        
+        return {"message": "Attachment deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {str(e)}")
+
 @router.get("/")
 async def fetch_concern_slips(
     current_user: dict = Depends(get_current_user),
 ): 
     service = ConcernSlipService()
+    logger.info(f"[DEBUG] Fetching concern slips for user: {current_user.get('email')} with role: {current_user.get('role')}")
     print(current_user)
 
     if current_user and current_user.get('role') == 'staff': 
@@ -62,6 +255,7 @@ async def fetch_concern_slips(
         concern_slips = await service.get_all_concern_slips() 
         
     
+    logger.info(f"[DEBUG] Found {len(concern_slips)} concern slips in database")
     return concern_slips
     
     
@@ -640,9 +834,22 @@ async def create_concern_slip(
 async def get_next_concern_slip_id(current_user: dict = Depends(get_current_user)):
     """Get the next available concern slip ID"""
     try:
+        logger.info(f"[ConcernSlip] Generating next ID for user: {current_user.get('uid')}")
+        
         from app.services.concern_slip_id_service import concern_slip_id_service
         next_id = await concern_slip_id_service.generate_concern_slip_id()
-        return {"next_id": next_id}
+        
+        logger.info(f"[ConcernSlip] Generated ID: {next_id}")
+        
+        return {"next_id": next_id, "success": True}
     except Exception as e:
+<<<<<<< master
+        logger.error(f"[ConcernSlip] ❌ Error generating next concern slip ID: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to generate ID: {str(e)}"
+        )
+=======
         logger.error(f"Error generating next concern slip ID: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate ID: {str(e)}")
+>>>>>>> master

@@ -321,13 +321,36 @@ class WorkOrderPermitService:
     async def _update_permit_by_doc_id(self, document_id: str, update_data: dict) -> tuple[bool, str]:
         """Helper method to update work order permit by document ID"""
         try:
-            # Use the document ID directly to update
-            success, error = await self.db.update_document("work_order_permits", document_id, update_data)
+            # Query to find the document with the custom ID
+            success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
+            if not success or not permits_data or len(permits_data) == 0:
+                return False, "Work order permit not found"
+            
+            # Get the Firestore document ID from the first matching document
+            permit_doc = permits_data[0]
+            firestore_doc_id = permit_doc.get("_doc_id")
+            
+            if not firestore_doc_id:
+                return False, "Could not find Firestore document ID"
+            
+            # Update using the Firestore document ID
+            success, error = await self.db.update_document("work_order_permits", firestore_doc_id, update_data)
             
             if not success:
-                return False, error or "Failed to update work order permit"
+                return False, f"Failed to update work order permit: {error}"
             
             return True, ""
             
         except Exception as e:
             return False, str(e)
+
+    async def _send_tenant_notification(self, tenant_id: str, permit_id: str, message: str):
+        """Helper method to send notification to tenant"""
+        await notification_manager.create_notification(
+            notification_type=NotificationType.PERMIT_STATUS_UPDATE,
+            recipient_id=tenant_id,
+            title="Permit Status Update",
+            message=message,
+            related_entity_type="work_order_permit",
+            related_entity_id=permit_id
+        )
