@@ -11,6 +11,7 @@ from app.models.database_models import MaintenanceTask
 from app.services.maintenance_task_service import maintenance_task_service
 from app.services.special_maintenance_service import special_maintenance_service
 from app.services.user_id_service import UserIdService, user_id_service
+from app.database.collections import COLLECTIONS
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/maintenance", tags=["maintenance"])
@@ -476,10 +477,27 @@ async def create_maintenance_task(
             task_dict,
         )
 
+        serialized_task = await _serialize_task(task)
+
+        # If the task contains inventory_request_ids, include full request documents
+        req_ids = serialized_task.get("inventory_request_ids") or getattr(task, "inventory_request_ids", None) or []
+        inventory_requests = []
+        if req_ids:
+            for rid in req_ids:
+                try:
+                    s, req_doc, e = await maintenance_task_service.db.get_document(COLLECTIONS["inventory_requests"], rid)
+                    if s and req_doc:
+                        inventory_requests.append(req_doc)
+                except Exception:
+                    logger.warning("Failed to fetch inventory request %s for serialization", rid)
+
+        if inventory_requests:
+            serialized_task["inventory_requests"] = inventory_requests
+
         return {
             "success": True,
             "message": "Maintenance task created successfully",
-            "task": await _serialize_task(task),
+            "task": serialized_task,
         }
 
     except HTTPException:
@@ -587,6 +605,11 @@ class ChecklistItemUpdate(BaseModel):
     task: Optional[str] = None
 
 
+class InventoryRequestReceived(BaseModel):
+    condition: Optional[str] = "ok"
+    notes: Optional[str] = None
+
+
 class ChecklistUpdate(BaseModel):
     """Model for updating the entire checklist."""
     checklist_completed: List[Dict[str, Any]]
@@ -643,6 +666,39 @@ async def assign_staff_to_maintenance_task(
     except Exception as exc:  # pragma: no cover
         logger.error("Unexpected error assigning staff to task %s: %s", task_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to assign staff: {exc}")
+
+
+@router.post("/inventory_requests/{request_id}/received")
+async def mark_inventory_request_received(
+    request_id: str,
+    payload: InventoryRequestReceived,
+    current_user: dict = Depends(get_current_user),
+):
+    """Mark an inventory request as received for a maintenance task.
+
+    Only the staff assigned to the related maintenance task or an admin may perform this action.
+    If the item is broken/damaged, the server will create a replacement request and attach it to the task.
+    """
+    try:
+        if current_user.get("role") not in {"admin", "staff"}:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        performer_id = current_user.get("uid")
+
+        result = await maintenance_task_service.mark_inventory_request_received(
+            request_id, performer_id, condition=payload.condition, notes=payload.notes
+        )
+
+        return {"success": True, "message": "Inventory request updated", "result": result}
+
+    except ValueError as ve:
+        logger.error("Error marking inventory request received %s: %s", request_id, ve)
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error marking inventory request received %s: %s", request_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to mark inventory request received: {exc}")
 
 
 @router.patch("/{task_id}/checklist")

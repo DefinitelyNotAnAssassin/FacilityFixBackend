@@ -73,11 +73,12 @@ async def _create_work_order_permit_logic(
         "formatted_id": formatted_id,
         "concern_slip_id": concern_slip_id,  # Include concern_slip_id if provided
         "requested_by": current_user["uid"],
+        "requested_by_name": current_user.get("display_name") or current_user.get("name") or current_user.get("email") or "",
         "title": title,
         "description": request.request_type_detail,
         "location": request.location,
-        "category": "general",
-        "priority": "medium",
+        "category": "",
+        "priority": "",
         "status": "pending",
         "request_type": "Work Order Permit",
         "unit_id": request.unit_id,
@@ -188,6 +189,28 @@ async def approve_permit(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to approve permit: {str(e)}")
 
+
+@router.patch("/{permit_id}/approved", response_model=WorkOrderPermit)
+async def approve_permit_alias(
+    permit_id: str,
+    request: ApprovePermitRequest,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["admin"]))
+):
+    """Alias endpoint for clients that call '/approved'"""
+    try:
+        service = WorkOrderPermitService()
+        permit = await service.approve_permit(
+            permit_id=permit_id,
+            approved_by=current_user["uid"],
+            conditions=request.conditions
+        )
+        return permit
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to approve permit: {str(e)}")
+
 @router.patch("/{permit_id}/deny", response_model=WorkOrderPermit)
 async def deny_permit(
     permit_id: str,
@@ -208,6 +231,55 @@ async def deny_permit(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to deny permit: {str(e)}")
+
+
+@router.patch("/{permit_id}/rejected", response_model=WorkOrderPermit)
+async def reject_permit_alias(
+    permit_id: str,
+    request: DenyPermitRequest,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["admin"]))
+):
+    """Alias endpoint for clients that call '/rejected' instead of '/deny'"""
+    try:
+        service = WorkOrderPermitService()
+        permit = await service.deny_permit(
+            permit_id=permit_id,
+            denied_by=current_user["uid"],
+            reason=request.reason
+        )
+        return permit
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reject permit: {str(e)}")
+
+
+@router.patch("/{permit_id}/returned", response_model=WorkOrderPermit)
+async def return_permit_to_tenant(
+    permit_id: str,
+    request: DenyPermitRequest,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["admin"]))
+):
+    """Endpoint to mark a permit as returned to tenant for edits (client calls '/returned').
+    This updates the permit status to 'returned_to_tenant' and records admin notes if provided.
+    """
+    try:
+        service = WorkOrderPermitService()
+        # Use update_permit_status to set a specific status and attach notes
+        notes = request.reason if request and getattr(request, 'reason', None) else None
+        permit = await service.update_permit_status(
+            permit_id=permit_id,
+            status="returned_to_tenant",
+            updated_by=current_user["uid"],
+            notes=notes
+        )
+        return permit
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to return permit to tenant: {str(e)}")
 
 @router.patch("/{permit_id}/status", response_model=WorkOrderPermit)
 async def update_permit_status(
@@ -504,13 +576,60 @@ async def get_work_order_attachment_url(
             file_id=file_id,
             user_id=current_user.get("uid")
         )
-        
+
         return {"url": signed_url}
-    
+
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get attachment URL: {str(e)}")
+
+
+@router.delete("/{permit_id}")
+async def delete_work_order_permit(
+    permit_id: str,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["tenant", "admin"]))
+):
+    """Delete a work order permit.
+    - Tenants can delete their own permits only when status is 'pending'.
+    - Admins can delete any permit.
+    """
+    try:
+        from app.database.database_service import DatabaseService
+
+        db = DatabaseService()
+
+        success, permits, error = await db.query_documents("work_order_permits", [("id", "==", permit_id)])
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to query work order permits: {error}")
+
+        if not permits or len(permits) == 0:
+            raise HTTPException(status_code=404, detail="Work order permit not found")
+
+        permit = permits[0]
+        doc_id = permit.get("_doc_id") or permit.get("id") or permit_id
+
+        owner_uid = permit.get("requested_by") or permit.get("created_by") or permit.get("reported_by")
+        is_admin = current_user.get("role") == "admin" or current_user.get("is_admin") is True
+
+        if not is_admin:
+            if not owner_uid or owner_uid != current_user.get("uid"):
+                raise HTTPException(status_code=403, detail="Tenants can only delete their own permits")
+            if permit.get("status") != ["pending", "completed"]:
+                raise HTTPException(status_code=403, detail="Tenants may only delete permits while status is 'pending'")
+
+        delete_success, delete_error = await db.delete_document("work_order_permits", doc_id)
+        if not delete_success:
+            raise HTTPException(status_code=500, detail=f"Failed to delete permit: {delete_error}")
+
+        return {"success": True, "message": "Work order permit deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete work order permit: {str(e)}")
+
 
 @router.delete("/{permit_id}/attachments/{file_id}")
 async def delete_work_order_attachment(
@@ -526,9 +645,9 @@ async def delete_work_order_attachment(
             file_id=file_id,
             user_id=current_user.get("uid")
         )
-        
+
         return {"message": "Attachment deleted successfully"}
-    
+
     except HTTPException:
         raise
     except Exception as e:

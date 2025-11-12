@@ -228,7 +228,7 @@ try:
 except Exception as e:
     logger.error(f"Error loading label files: {e}")
     # Fallback to default categories and urgencies
-    CATEGORIES = ["Electrical", "Plumbing", "HVAC", "Structural", "Pest Control", "Other"]
+    CATEGORIES = ["Electrical", "Plumbing", "HVAC", "Masonry", "Pest Control", "Carpentry", "Other"]
     URGENCIES = ["Low", "Medium", "High"]
 
 CATEGORIES_LOWER = [c.lower() for c in CATEGORIES]

@@ -320,11 +320,11 @@ class NotificationService:
     async def notify_preventive_maintenance_due(self, building_id: str, maintenance_data: dict) -> bool:
         """Send preventive maintenance due notification to assigned staff and admins"""
         try:
-            equipment_name = maintenance_data.get('equipment_name', 'Unknown Equipment')
-            task_title = maintenance_data.get('task_title', 'Maintenance Task')
+            equipment_name = maintenance_data.get('equipment_name')
+            task_title = maintenance_data.get('task_title')
             scheduled_date = maintenance_data.get('scheduled_date')
             assigned_to = maintenance_data.get('assigned_to')
-            priority = maintenance_data.get('priority', 'medium')
+            priority = maintenance_data.get('priority')
             
             # Format scheduled date
             date_str = "soon"
@@ -395,10 +395,10 @@ class NotificationService:
             if not assigned_to:
                 return False
             
-            equipment_name = task_data.get('equipment_name', 'Unknown Equipment')
-            task_title = task_data.get('task_title', 'Maintenance Task')
+            equipment_name = task_data.get('equipment_name')
+            task_title = task_data.get('task_title')
             scheduled_date = task_data.get('scheduled_date')
-            priority = task_data.get('priority', 'medium')
+            priority = task_data.get('priority')
             
             # Format scheduled date
             date_str = "soon"
@@ -509,7 +509,7 @@ class NotificationService:
             else:
                 title = f"📊 Usage Threshold Warning: {equipment_name}"
                 message = f"{equipment_name} is at {percentage}% of usage threshold ({current_usage}/{threshold} {usage_unit})"
-                priority = "medium"
+                priority = ""
             
             # Notify admins and maintenance staff
             success, users, error = await self.db.query_documents(

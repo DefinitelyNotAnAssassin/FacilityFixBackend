@@ -10,6 +10,7 @@ from .notification_service import notification_service
 from .email_service import email_service
 from .websocket_service import websocket_notification_service
 from .announcement_id_service import announcement_id_service
+from .notification_manager import notification_manager
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +341,25 @@ class AnnouncementService:
             if not target_users:
                 logger.warning(f"No target users found for announcement in building {building_id}")
                 return
+
+            # Create centralized in-app/push notifications for the announcement
+            try:
+                # Use formatted_id where available for nicer references
+                ann_ref_id = announcement_data.get('formatted_id') or announcement_data.get('id')
+                await notification_manager.notify_announcement_published(
+                    announcement_id=ann_ref_id,
+                    title=title,
+                    content=content,
+                    target_audience=audience,
+                    target_roles=target_roles or None,
+                    target_departments=target_departments or None,
+                    target_user_ids=target_user_ids or None,
+                    building_id=building_id,
+                    priority=announcement_data.get('priority_level', 'normal'),
+                    announcement_type=announcement_type
+                )
+            except Exception as e:
+                logger.warning(f"Failed to call notification_manager for announcement: {str(e)}")
             
             # Send WebSocket real-time updates
             if send_notifications:

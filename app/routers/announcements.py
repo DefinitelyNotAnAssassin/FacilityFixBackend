@@ -387,6 +387,45 @@ async def deactivate_announcement(
         logger.error(f"Error deactivating announcement {announcement_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to deactivate announcement: {str(e)}")
 
+
+@router.delete("/{announcement_id}/hard", response_model=dict)
+async def hard_delete_announcement(
+    announcement_id: str = Path(..., description="Announcement ID to permanently delete"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Permanently delete an announcement (Admin only). This performs a hard delete from the database.
+
+    Note: Use with caution as this removes the document and its audit trail.
+    """
+    # Verify user is admin
+    if current_user.get('role') != 'admin':
+        raise HTTPException(status_code=403, detail="Only administrators can permanently delete announcements")
+
+    try:
+        # Ensure announcement exists
+        announcement = await announcement_service.get_announcement_by_id(announcement_id)
+        if not announcement:
+            raise HTTPException(status_code=404, detail="Announcement not found")
+
+        # Use the shared database instance on the service to delete the doc.
+        success, error = await announcement_service.db.delete_document(
+            COLLECTIONS['announcements'],
+            announcement_id
+        )
+
+        if not success:
+            logger.error(f"Failed to hard-delete announcement {announcement_id}: {error}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete announcement: {error}")
+
+        logger.info(f"Announcement permanently deleted: {announcement_id} by {current_user.get('uid')}")
+        return {"success": True, "message": "Announcement permanently deleted", "announcement_id": announcement_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error hard-deleting announcement {announcement_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to permanently delete announcement: {str(e)}")
+
 @router.get("/building/{building_id}/stats", response_model=AnnouncementStatsResponse)
 async def get_announcement_statistics(
     building_id: str = Path(..., description="Building ID"),

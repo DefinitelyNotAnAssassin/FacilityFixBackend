@@ -7,6 +7,7 @@ from app.services.notification_manager import notification_manager
 from app.services.concern_slip_service import ConcernSlipService
 from app.models.notification_models import NotificationType
 import uuid
+from app.services.work_order_permit_id_service import work_order_permit_id_service
 
 
 class WorkOrderPermitService:
@@ -33,22 +34,26 @@ class WorkOrderPermitService:
         # Format title similar to job service: "Work Order for: {concern_slip.title}"
         concern_slip_title = concern_slip.get("title", "Untitled Concern")
         
+        # Generate formatted work order permit ID (WOP-YYYY-NNNNN)
+        formatted_id = await work_order_permit_id_service.generate_work_order_permit_id()
+
         permit_data_complete = {
-            "id": str(uuid.uuid4()),
+            "id": formatted_id,
+            "formatted_id": formatted_id,
             "concern_slip_id": concern_slip_id,
             "title": f"Work Order for: {concern_slip_title}",
             "requested_by": requested_by,
             "unit_id": permit_data["unit_id"],
+            "work_order_type": permit_data["work_order_type"],
             "contractor_name": permit_data["contractor_name"],
             "contractor_contact": permit_data["contractor_contact"],
-            "contractor_company": permit_data.get("contractor_company"),
-            "work_description": permit_data["work_description"],
+            "contractor_email": permit_data.get("contractor_email"),
+            "tenant_additional_notes": permit_data["tenant_additional_notes"],
             "proposed_start_date": permit_data["proposed_start_date"],
-            "estimated_duration": permit_data["estimated_duration"],
-            "specific_instructions": permit_data["specific_instructions"],
-            "entry_requirements": permit_data.get("entry_requirements"),
+            "proposed_end_date": permit_data["proposed_end_date"],
+            "admin_notes": permit_data["admin_notes"],
             "status": "pending",
-            "request_type": "Work Order Permit",
+            "request_type": "Work Order",
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
@@ -304,16 +309,47 @@ class WorkOrderPermitService:
         """Get all work order permits (Admin only)"""
         permits = await self.db.get_all_documents("work_order_permits")
         
-        for permit in permits: 
+        for permit in permits:
+            # Enrich requested_by display
             permit["staff_profile"] = None
             if permit.get("requested_by"):
                 requested_by = permit.get("requested_by")
-                user_profile = await self.user_service.get_user_profile(requested_by)   
-                permit['requested_by'] = f"{user_profile.first_name} {user_profile.last_name}" if user_profile else "Unknown"
-            if permit.get("concern_slip_id"): 
+                try:
+                    user_profile = await self.user_service.get_user_profile(requested_by)
+                    permit['requested_by'] = f"{user_profile.first_name} {user_profile.last_name}" if user_profile else "Unknown"
+                except Exception:
+                    permit['requested_by'] = requested_by
+
+            # Enrich concern slip id to formatted id
+            if permit.get("concern_slip_id"):
                 concern_slip_id = permit.get("concern_slip_id")
                 concern_slip = await self.concern_slip_service.get_concern_slip(concern_slip_id)
                 permit['concern_slip_id'] = concern_slip.formatted_id if concern_slip else "Unknown"
+
+            # Enrich assigned staff information if present
+            assigned = permit.get('assigned_to')
+            if assigned:
+                staff_profile_obj = None
+                try:
+                    staff_profile_obj = await self.user_service.get_user_profile(assigned)
+                except Exception:
+                    staff_profile_obj = None
+
+                if not staff_profile_obj:
+                    try:
+                        staff_profile_obj = await UserIdService.get_staff_profile_from_staff_id(assigned)
+                    except Exception:
+                        staff_profile_obj = None
+
+                if staff_profile_obj:
+                    permit['staff_profile'] = {
+                        'staff_id': getattr(staff_profile_obj, 'staff_id', None) or staff_profile_obj.get('staff_id') if isinstance(staff_profile_obj, dict) else None,
+                        'first_name': getattr(staff_profile_obj, 'first_name', None) or staff_profile_obj.get('first_name') if isinstance(staff_profile_obj, dict) else None,
+                        'last_name': getattr(staff_profile_obj, 'last_name', None) or staff_profile_obj.get('last_name') if isinstance(staff_profile_obj, dict) else None,
+                        'full_name': (getattr(staff_profile_obj, 'first_name', '') + ' ' + getattr(staff_profile_obj, 'last_name', '')).strip() if staff_profile_obj else assigned
+                    }
+                else:
+                    permit['assigned_staff_name'] = assigned
 
         
         return [WorkOrderPermit(**permit) for permit in permits]
@@ -321,26 +357,12 @@ class WorkOrderPermitService:
     async def _update_permit_by_doc_id(self, document_id: str, update_data: dict) -> tuple[bool, str]:
         """Helper method to update work order permit by document ID"""
         try:
-            # Query to find the document with the custom ID
-            success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", permit_id)])
-            if not success or not permits_data or len(permits_data) == 0:
-                return False, "Work order permit not found"
-            
-            # Get the Firestore document ID from the first matching document
-            permit_doc = permits_data[0]
-            firestore_doc_id = permit_doc.get("_doc_id")
-            
-            if not firestore_doc_id:
-                return False, "Could not find Firestore document ID"
-            
-            # Update using the Firestore document ID
-            success, error = await self.db.update_document("work_order_permits", firestore_doc_id, update_data)
-            
+            # Update directly using the provided Firestore document ID
+            success, error = await self.db.update_document("work_order_permits", document_id, update_data)
             if not success:
                 return False, f"Failed to update work order permit: {error}"
-            
             return True, ""
-            
+
         except Exception as e:
             return False, str(e)
 

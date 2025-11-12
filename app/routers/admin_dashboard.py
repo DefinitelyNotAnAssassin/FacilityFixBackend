@@ -133,8 +133,8 @@ async def get_all_tenant_requests(
                 "title": f"Work Order Permit - {wp.contractor_name}",
                 "description": wp.work_description,
                 "location": wp.unit_id,
-                "category": getattr(wp, 'category', 'general'),  # AI-generated category
-                "priority": getattr(wp, 'priority', 'medium'),  # AI-generated priority
+                "category": getattr(wp, 'category', ''),  # AI-generated category
+                "priority": getattr(wp, 'priority', ''),  # AI-generated priority
                 "status": wp.status,
                 "request_type": "Work Order Permit",
                 "unit_id": wp.unit_id,
@@ -190,7 +190,7 @@ async def get_all_maintenance_tasks(
                 "priority": js.priority or "medium",
                 "status": js.status,
                 "assigned_to": js.assigned_to,
-                "assigned_staff": js.assigned_to,
+                "assigned_staff": (js.staff_profile.get('full_name') if getattr(js, 'staff_profile', None) else js.assigned_to),
                 "scheduled_date": js.scheduled_date.isoformat() if getattr(js, 'scheduled_date', None) else None,
                 "created_at": js.created_at.isoformat() if js.created_at else None,
                 "updated_at": js.updated_at.isoformat() if js.updated_at else None,

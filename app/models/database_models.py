@@ -170,6 +170,8 @@ class ConcernSlip(BaseModel):
 # JobService Model (modified from WorkOrder)
 class JobService(BaseModel):
     id: Optional[str] = None
+    formatted_id: Optional[str] = None
+    additional_notes: Optional[str] = None
     concern_slip_id: str  # Links to concern_slip
     created_by: str  # admin user_id or Firebase UID of creator
     assigned_to: Optional[str] = None  # internal staff user_id
@@ -253,8 +255,8 @@ class MaintenanceTask(BaseModel):
     task_title: str
     task_description: str
     location: str
-    category: str = Field(default="preventive")  # preventive, corrective, emergency
-    priority: str = Field(default="medium")  # low, medium, high, critical
+    category: str = Field(default="")  # preventive, corrective, emergency
+    priority: str = Field(default="")  # low, medium, high, critical
 
     # Scheduling information
     task_type: str = Field(default="scheduled")  # scheduled, recurring, on_demand, internal, external
@@ -341,7 +343,7 @@ class MaintenanceSchedule(BaseModel):
     
     # Status and metadata
     is_active: bool = Field(default=True)
-    priority: str = Field(default="medium")  # low, medium, high, critical
+    priority: str = Field(default="")  # low, medium, high
     created_by: str
     last_generated: Optional[datetime] = None
     next_due_date: Optional[datetime] = None

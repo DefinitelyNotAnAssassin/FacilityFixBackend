@@ -8,6 +8,8 @@ from ..models.database_models import (
     LowStockAlert, InventoryUsageAnalytics
 )
 import logging
+import uuid
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +343,22 @@ class InventoryService:
                     )
                 except Exception as fcm_error:
                     logger.warning(f"Failed to send FCM notification for new request: {str(fcm_error)}")
+
+                # Notify admins/inventory staff via notification manager as well
+                try:
+                    from ..services.notification_manager import notification_manager
+                    item_name = request_data.get('item_name') or ''
+                    qty = request_data.get('quantity_requested', 1)
+                    await notification_manager.notify_inventory_request_submitted(
+                        request_id,
+                        request_data.get('requested_by'),
+                        item_name,
+                        qty,
+                        request_data.get('purpose', '')
+                    )
+                except Exception:
+                    # Non-fatal
+                    logger.debug("Failed to send inventory request submitted notifications via manager")
             
             return success, request_id, error
             
@@ -518,6 +536,10 @@ class InventoryService:
                         request_data['item_code'] = item_data.get('item_code')
                         request_data['department'] = item_data.get('department')
                         request_data['current_stock'] = item_data.get('current_stock')
+                        # Provide alias expected by frontend
+                        request_data['available_stock'] = item_data.get('current_stock')
+                        # Normalize quantity field for frontend
+                        request_data['quantity'] = request_data.get('quantity_requested') or request_data.get('quantity_approved') or 1
                         request_data['requested_by'] = await UserIdService.get_user_full_name(request_data.get('requested_by'))
                 return True, request_data, None
             else:
@@ -527,6 +549,159 @@ class InventoryService:
             error_msg = f"Error getting inventory request {request_id}: {str(e)}"
             logger.error(error_msg)
             return False, None, error_msg
+
+    async def reserve_item_for_task(self, item_identifier: str, quantity: int, task_id: str, requested_by: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Attempt to reserve `quantity` of the given inventory item for a maintenance task.
+
+        This tries to perform the reservation atomically using Firestore transactions when
+        possible. It will create an `inventory_requests` document with status 'reserved'
+        and mark the inventory item as reserved (reserved=True, reserved_for_task, reserved_quantity).
+
+        Returns (success, request_id_or_error, error_str)
+        """
+        try:
+            # Resolve inventory item
+            item_success, item_data, item_err = await self.get_inventory_item(item_identifier)
+            if not item_success or not item_data:
+                return False, None, f"Inventory item not found: {item_err}"
+
+            doc_id = item_data.get('_doc_id') or item_data.get('id') or item_identifier
+            raw = None
+            try:
+                raw = self.db._raw_firestore()
+            except Exception:
+                raw = None
+
+            request_id = uuid.uuid4().hex
+            now = datetime.utcnow()
+            request_payload = {
+                'inventory_id': item_data.get('id') or doc_id,
+                'item_name': item_data.get('item_name'),
+                'item_code': item_data.get('item_code'),
+                'available_stock': item_data.get('current_stock', 0),
+                'quantity': quantity,
+                'reserve': True,
+                'requested_by': requested_by,
+                'quantity_requested': quantity,
+                'purpose': f"Reserved for maintenance task {task_id}",
+                'maintenance_task_id': task_id,
+                'reference_type': 'maintenance_task',
+                'reference_id': task_id,
+                'status': 'reserved',
+                'tenant_can_request_again': True,
+                'created_at': now,
+                'updated_at': now,
+                'requested_date': now,
+                'start_date': now.strftime('%Y-%m-%d')
+            }
+
+            # Try to perform atomic reservation using Firestore transactions if available
+            if raw is not None and hasattr(raw, 'transaction'):
+                try:
+                    # Import transactional decorator
+                    from firebase_admin import firestore as admin_firestore
+
+                    @admin_firestore.transactional
+                    def _txn(transaction, inv_ref, req_ref, req_payload, qty_to_reserve):
+                        snap = inv_ref.get(transaction=transaction)
+                        inv = snap.to_dict() or {}
+                        current_stock = inv.get('current_stock', 0)
+                        reserved_qty = inv.get('reserved_quantity', 0) or 0
+                        available = current_stock - reserved_qty
+                        if available < qty_to_reserve:
+                            raise Exception('Insufficient stock to reserve')
+
+                        # Create request doc within transaction
+                        transaction.set(req_ref, req_payload)
+
+                        # Update inventory reserved flags and counters
+                        new_reserved_qty = reserved_qty + qty_to_reserve
+                        transaction.update(inv_ref, {
+                            'reserved': True,
+                            'reserved_for_task': task_id,
+                            'reserved_at': now.isoformat(),
+                            'reserved_quantity': new_reserved_qty,
+                            'updated_at': now
+                        })
+
+                    inv_ref = raw.collection(COLLECTIONS['inventory']).document(doc_id)
+                    req_ref = raw.collection(COLLECTIONS['inventory_requests']).document(request_id)
+                    transaction = raw.transaction()
+                    _txn(transaction, inv_ref, req_ref, request_payload, quantity)
+
+                    # Transaction committed successfully; send non-critical notifications
+                    try:
+                        from ..services.fcm_service import fcm_service
+                        await fcm_service.send_inventory_request_notification({**request_payload, 'id': request_id}, 'request_created')
+                    except Exception:
+                        logger.debug('FCM notification for reserved request failed')
+
+                    try:
+                        from ..services.notification_manager import notification_manager
+                        item_name = item_data.get('item_name')
+                        await notification_manager.notify_inventory_request_submitted(
+                            request_id,
+                            requested_by,
+                            item_name,
+                            quantity,
+                            request_payload.get('purpose', '')
+                        )
+                        # If the related maintenance task has an assigned staff, notify them as well
+                        try:
+                            success_task, task_doc, err = await self.db.get_document(COLLECTIONS['maintenance_tasks'], task_id)
+                            if success_task and task_doc:
+                                assigned = task_doc.get('assigned_to')
+                                if assigned:
+                                    await notification_manager.notify_maintenance_task_assigned(
+                                        task_id=task_id,
+                                        staff_id=assigned,
+                                        task_title=task_doc.get('task_title') or task_doc.get('title', ''),
+                                        location=task_doc.get('location', ''),
+                                        scheduled_date=task_doc.get('scheduled_date'),
+                                        assigned_by=requested_by
+                                    )
+                        except Exception:
+                            logger.debug('Failed to fetch task or notify assigned staff after reservation')
+                    except Exception:
+                        logger.debug('Notification manager failed for reserved request')
+
+                    return True, request_id, None
+                except Exception as e:
+                    logger.debug(f'Atomic reservation transaction failed: {e}')
+                    # fallthrough to non-transactional fallback
+
+            # Fallback (non-transactional): best-effort reserve
+            # Re-check availability
+            success_check, current_item, err = await self.get_inventory_item(item_identifier)
+            if not success_check:
+                return False, None, f"Inventory item not found: {err}"
+            current_stock = current_item.get('current_stock', 0)
+            reserved_qty = current_item.get('reserved_quantity', 0) or 0
+            available = current_stock - reserved_qty
+            if available < quantity:
+                return False, None, f"Insufficient stock to reserve (available {available})"
+
+            # Create request document (non-atomic)
+            success, rid, err = await self.create_inventory_request(request_payload)
+            if not success:
+                return False, None, f"Failed to create request: {err}"
+
+            # Mark inventory as reserved (best-effort)
+            try:
+                await self.update_inventory_item(doc_id, {
+                    'reserved': True,
+                    'reserved_for_task': task_id,
+                    'reserved_at': datetime.utcnow().isoformat(),
+                    'reserved_quantity': reserved_qty + quantity
+                }, requested_by)
+            except Exception:
+                logger.warning('Failed to mark inventory %s as reserved (non-atomic)', doc_id)
+
+            return True, rid, None
+
+        except Exception as e:
+            logger.error(f"Error reserving inventory item {item_identifier}: {e}")
+            return False, None, str(e)
 
     async def get_requests_by_maintenance_task(self, maintenance_task_id: str) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
         """Get all inventory requests linked to a maintenance task"""

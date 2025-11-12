@@ -22,9 +22,10 @@ class CreateConcernSlipRequest(BaseModel):
     description: str
     location: str
     category: str  # electrical, plumbing, hvac, carpentry, maintenance, security, fire_safety, general
-    priority: str = "medium"  # low, medium, high, critical
+    priority: str = ""  # low, medium, high, critical
     unit_id: Optional[str] = None
     attachments: Optional[List[str]] = []
+    schedule_availability: Optional[str] = None
 
 class EvaluateConcernSlipRequest(BaseModel):
     status: str  # approved, rejected

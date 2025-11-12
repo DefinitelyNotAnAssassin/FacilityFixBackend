@@ -30,6 +30,7 @@ class CreateJobServiceFromConcernRequest(BaseModel):
     assigned_to: Optional[str] = None
     scheduled_date: Optional[datetime] = None
     estimated_hours: Optional[float] = None
+    additional_notes: Optional[str] = None
 
 class AssignJobServiceRequest(BaseModel):
     assigned_to: str
@@ -66,8 +67,8 @@ async def _create_job_service_logic(
         # If notes were not provided, default to empty string
         "description": request.notes or "",
         "location": request.location,
-        "category": "general",
-        "priority": "medium",
+        "category": "",
+        "priority": "",
         "status": "pending",
         "request_type": "Job Service",
         "unit_id": request.unit_id,
@@ -135,10 +136,26 @@ async def create_job_service_from_concern(
     """Create a new job service from an approved concern slip (Admin only)"""
     try:
         service = JobServiceService()
+        # Prepare job data and ensure we include a formatted job service id and any additional notes
+        from app.services.job_service_id_service import job_service_id_service
+
+        job_data = request.dict(exclude_unset=True)
+        # Generate a formatted job service id (JS-YYYY-NNNNN) and attach it to the payload
+        try:
+            formatted_id = await job_service_id_service.generate_job_service_id()
+            job_data["formatted_id"] = formatted_id
+        except Exception:
+            # If ID generation fails, continue and let service handle or fail gracefully
+            pass
+
+        # Ensure additional_notes is present in the job data (if provided)
+        if request.additional_notes:
+            job_data["additional_notes"] = request.additional_notes
+
         job_service = await service.create_job_service(
             concern_slip_id=request.concern_slip_id,
             created_by=current_user["uid"],
-            job_data=request.dict(exclude_unset=True)
+            job_data=job_data
         )
         return job_service
     except ValueError as e:
@@ -422,3 +439,64 @@ async def delete_job_service_attachment(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {str(e)}")
+
+
+@router.delete("/{job_service_id}")
+async def delete_job_service(
+    job_service_id: str,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["tenant", "admin"]))
+):
+    """Delete a job service.
+    - Tenants can delete their own job services only when status is 'pending' or 'completed'.
+    - Admins can delete any job service.
+    """
+    try:
+        from app.database.database_service import DatabaseService
+
+        db = DatabaseService()
+
+        # Query by business id field
+        success, results, error = await db.query_documents("job_services", [("id", "==", job_service_id)])
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to query job services: {error}")
+
+        if not results or len(results) == 0:
+            # Fallback: maybe the job service exists in job_service_requests collection
+            success, results, error = await db.query_documents("job_service_requests", [("id", "==", job_service_id)])
+            if not success:
+                raise HTTPException(status_code=500, detail=f"Failed to query job service requests: {error}")
+            if not results or len(results) == 0:
+                raise HTTPException(status_code=404, detail="Job service not found")
+
+        job = results[0]
+
+        # Firestore document id (internal) may be provided as _doc_id
+        doc_id = job.get("_doc_id") or job.get("id") or job_service_id
+
+        # Determine owner field (some flows use created_by, reported_by or requested_by)
+        owner_uid = job.get("created_by") or job.get("reported_by") or job.get("requested_by")
+        # Determine if current user is admin
+        is_admin = current_user.get("role") == "admin" or current_user.get("is_admin") is True
+
+        # If tenant, enforce ownership and status == pending (concern-slip behavior)
+        if not is_admin:
+            if not owner_uid or owner_uid != current_user.get("uid"):
+                raise HTTPException(status_code=403, detail="Tenants can only delete their own job services")
+            if job.get("status") not in ["pending", "completed"]:
+                raise HTTPException(status_code=403, detail="Tenants may only delete job services while status is 'pending' or 'completed'")
+
+        # Perform delete
+        delete_success, delete_error = await db.delete_document("job_services", doc_id)
+        if not delete_success:
+            # Try deleting from job_service_requests if it exists there
+            delete_success, delete_error = await db.delete_document("job_service_requests", doc_id)
+            if not delete_success:
+                raise HTTPException(status_code=500, detail=f"Failed to delete job service: {delete_error}")
+
+        return {"success": True, "message": "Job service deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete job service: {str(e)}")

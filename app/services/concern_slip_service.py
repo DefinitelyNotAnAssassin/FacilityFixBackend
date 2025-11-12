@@ -45,6 +45,7 @@ class ConcernSlipService:
             "title": concern_data["title"],
             "description": concern_data["description"],
             "location": concern_data["location"],
+            "schedule_availability": concern_data.get("schedule_availability"),
             "category": "pending_ai_analysis",
             "priority": "pending_ai_analysis",
             "unit_id": concern_data.get("unit_id"),
@@ -95,7 +96,7 @@ class ConcernSlipService:
                 "ai_processed": False,
                 "ai_processing_error": str(e),
                 "category": concern_data.get("category", "uncategorized"),
-                "priority": concern_data.get("priority", "medium"),
+                "priority": concern_data.get("priority", ""),
                 "updated_at": datetime.utcnow()
             })
 
@@ -105,7 +106,7 @@ class ConcernSlipService:
             title=concern_slip_data['title'],
             reported_by=reported_by,
             category=concern_slip_data.get('category', 'uncategorized'),
-            priority=concern_slip_data.get('priority', 'medium'),
+            priority=concern_slip_data.get('priority', ''),
             location=concern_slip_data['location']
         )
 
@@ -129,6 +130,34 @@ class ConcernSlipService:
                 return None
             concern_data = results[0]
         
+        # Enrich assigned staff profile so frontend can show staff name when assigned
+        try:
+            assigned_to = concern_data.get('assigned_to') if isinstance(concern_data, dict) else None
+            if assigned_to:
+                # Try staff lookup by staff_id first, then by user_id
+                staff_profile = None
+                try:
+                    staff_profile = await UserIdService.get_staff_profile_from_staff_id(assigned_to)
+                except Exception:
+                    staff_profile = None
+
+                if not staff_profile:
+                    try:
+                        staff_profile = await UserIdService.get_user_profile(assigned_to)
+                    except Exception:
+                        staff_profile = None
+
+                if staff_profile:
+                    concern_data['staff_profile'] = {
+                        'staff_id': getattr(staff_profile, 'staff_id', None),
+                        'first_name': getattr(staff_profile, 'first_name', None),
+                        'last_name': getattr(staff_profile, 'last_name', None),
+                        'full_name': f"{getattr(staff_profile, 'first_name', '')} {getattr(staff_profile, 'last_name', '')}".strip()
+                    }
+
+        except Exception as e:
+            logger.debug(f"Failed to enrich staff profile for concern {concern_slip_id}: {e}")
+
         return ConcernSlip(**concern_data)
 
     async def get_concern_slip_by_formatted_id(self, concern_slip_id: str) -> Optional[ConcernSlip]:
@@ -151,20 +180,36 @@ class ConcernSlipService:
 
         for slip in concern_data: 
             curr = slip._data  # transform DocumentSnapshot from class to dict 
-            if curr.get('status') == "completed": 
-                staff_profile = await UserIdService.get_staff_profile_from_staff_id(curr["assigned_to"])
-                if staff_profile:
-                    staff_profile = { 
-                                     "first_name": staff_profile.first_name,
-                                     "last_name": staff_profile.last_name,
-                                     "phone_number": staff_profile.phone_number,
-                                     "staff_id": staff_profile.staff_id
-                                     }
-                    
+            # Enrich assigned staff info for any assigned slip so frontend list can show staff name
+            assigned_to = curr.get('assigned_to')
+            if assigned_to:
+                staff_profile_obj = None
+                try:
+                    staff_profile_obj = await UserIdService.get_staff_profile_from_staff_id(assigned_to)
+                except Exception:
+                    staff_profile_obj = None
+
+                if not staff_profile_obj:
+                    try:
+                        staff_profile_obj = await UserIdService.get_user_profile(assigned_to)
+                    except Exception:
+                        staff_profile_obj = None
+
+                if staff_profile_obj:
+                    staff_profile = {
+                        "first_name": getattr(staff_profile_obj, 'first_name', None),
+                        "last_name": getattr(staff_profile_obj, 'last_name', None),
+                        "staff_id": getattr(staff_profile_obj, 'staff_id', None),
+                        "full_name": f"{getattr(staff_profile_obj, 'first_name', '')} {getattr(staff_profile_obj, 'last_name', '')}".strip()
+                    }
                     curr["staff_profile"] = staff_profile
-            if curr: 
-                curr["reported_by"] = await UserIdService.get_user_profile(curr["reported_by"])
-                curr["reported_by"] = curr["reported_by"].first_name + " " + curr["reported_by"].last_name if curr["reported_by"] else "Unknown"
+                    curr["assigned_staff_name"] = staff_profile.get("full_name")
+            if curr:
+                try:
+                    reported_profile = await UserIdService.get_user_profile(curr.get("reported_by"))
+                    curr["reported_by"] = reported_profile.first_name + " " + reported_profile.last_name if reported_profile else "Unknown"
+                except Exception:
+                    curr["reported_by"] = curr.get("reported_by") or "Unknown"
                 print("Reported By:", curr["reported_by"])
                 
                 curr = ConcernSlip(**curr) # feed to the model
@@ -232,7 +277,36 @@ class ConcernSlipService:
         if not success or not concerns:
             return []
         
-        return [ConcernSlip(**concern) for concern in concerns]
+        # Enrich assigned staff for each concern
+        enriched = []
+        for concern in concerns:
+            try:
+                assigned = concern.get('assigned_to')
+                if assigned:
+                    staff_profile_obj = None
+                    try:
+                        staff_profile_obj = await UserIdService.get_staff_profile_from_staff_id(assigned)
+                    except Exception:
+                        staff_profile_obj = None
+
+                    if not staff_profile_obj:
+                        try:
+                            staff_profile_obj = await UserIdService.get_user_profile(assigned)
+                        except Exception:
+                            staff_profile_obj = None
+
+                    if staff_profile_obj:
+                        concern['staff_profile'] = {
+                            'first_name': getattr(staff_profile_obj, 'first_name', None),
+                            'last_name': getattr(staff_profile_obj, 'last_name', None),
+                            'phone_number': getattr(staff_profile_obj, 'phone_number', None),
+                            'staff_id': getattr(staff_profile_obj, 'staff_id', None),
+                            'full_name': f"{getattr(staff_profile_obj, 'first_name', '')} {getattr(staff_profile_obj, 'last_name', '')}".strip()
+                        }
+                enriched.append(ConcernSlip(**concern))
+            except Exception:
+                continue
+        return enriched
 
     async def get_concern_slips_by_status(self, status: str) -> List[ConcernSlip]:
         """Get all concern slips with specific status"""
@@ -241,7 +315,35 @@ class ConcernSlipService:
         if not success or not concerns:
             return []
         
-        return [ConcernSlip(**concern) for concern in concerns]
+        enriched = []
+        for concern in concerns:
+            try:
+                assigned = concern.get('assigned_to')
+                if assigned:
+                    staff_profile_obj = None
+                    try:
+                        staff_profile_obj = await UserIdService.get_staff_profile_from_staff_id(assigned)
+                    except Exception:
+                        staff_profile_obj = None
+
+                    if not staff_profile_obj:
+                        try:
+                            staff_profile_obj = await UserIdService.get_user_profile(assigned)
+                        except Exception:
+                            staff_profile_obj = None
+
+                    if staff_profile_obj:
+                        concern['staff_profile'] = {
+                            'first_name': getattr(staff_profile_obj, 'first_name', None),
+                            'last_name': getattr(staff_profile_obj, 'last_name', None),
+                            'phone_number': getattr(staff_profile_obj, 'phone_number', None),
+                            'staff_id': getattr(staff_profile_obj, 'staff_id', None),
+                            'full_name': f"{getattr(staff_profile_obj, 'first_name', '')} {getattr(staff_profile_obj, 'last_name', '')}".strip()
+                        }
+                enriched.append(ConcernSlip(**concern))
+            except Exception:
+                continue
+        return enriched
 
     async def get_pending_concern_slips(self) -> List[ConcernSlip]:
         """Get all pending concern slips awaiting evaluation"""
@@ -250,7 +352,35 @@ class ConcernSlipService:
         if not success or not concerns:
             return []
         
-        return [ConcernSlip(**concern) for concern in concerns]
+        enriched = []
+        for concern in concerns:
+            try:
+                assigned = concern.get('assigned_to')
+                if assigned:
+                    staff_profile_obj = None
+                    try:
+                        staff_profile_obj = await UserIdService.get_staff_profile_from_staff_id(assigned)
+                    except Exception:
+                        staff_profile_obj = None
+
+                    if not staff_profile_obj:
+                        try:
+                            staff_profile_obj = await UserIdService.get_user_profile(assigned)
+                        except Exception:
+                            staff_profile_obj = None
+
+                    if staff_profile_obj:
+                        concern['staff_profile'] = {
+                            'first_name': getattr(staff_profile_obj, 'first_name', None),
+                            'last_name': getattr(staff_profile_obj, 'last_name', None),
+                            'phone_number': getattr(staff_profile_obj, 'phone_number', None),
+                            'staff_id': getattr(staff_profile_obj, 'staff_id', None),
+                            'full_name': f"{getattr(staff_profile_obj, 'first_name', '')} {getattr(staff_profile_obj, 'last_name', '')}".strip()
+                        }
+                enriched.append(ConcernSlip(**concern))
+            except Exception:
+                continue
+        return enriched
 
     async def get_approved_concern_slips(self) -> List[ConcernSlip]:
         """Get all approved concern slips ready for resolution"""
@@ -259,7 +389,35 @@ class ConcernSlipService:
         if not success or not concerns:
             return []
         
-        return [ConcernSlip(**concern) for concern in concerns]
+        enriched = []
+        for concern in concerns:
+            try:
+                assigned = concern.get('assigned_to')
+                if assigned:
+                    staff_profile_obj = None
+                    try:
+                        staff_profile_obj = await UserIdService.get_staff_profile_from_staff_id(assigned)
+                    except Exception:
+                        staff_profile_obj = None
+
+                    if not staff_profile_obj:
+                        try:
+                            staff_profile_obj = await UserIdService.get_user_profile(assigned)
+                        except Exception:
+                            staff_profile_obj = None
+
+                    if staff_profile_obj:
+                        concern['staff_profile'] = {
+                            'first_name': getattr(staff_profile_obj, 'first_name', None),
+                            'last_name': getattr(staff_profile_obj, 'last_name', None),
+                            'phone_number': getattr(staff_profile_obj, 'phone_number', None),
+                            'staff_id': getattr(staff_profile_obj, 'staff_id', None),
+                            'full_name': f"{getattr(staff_profile_obj, 'first_name', '')} {getattr(staff_profile_obj, 'last_name', '')}".strip()
+                        }
+                enriched.append(ConcernSlip(**concern))
+            except Exception:
+                continue
+        return enriched
 
     async def evaluate_concern_slip(
         self,
@@ -547,7 +705,34 @@ class ConcernSlipService:
             return []
         
         logger.info(f"[v0] Found {len(concerns)} concern slips for staff {staff_id}")
-        concern_slip_objects = [ConcernSlip(**concern) for concern in concerns]
+        concern_slip_objects = []
+        for concern in concerns:
+            try:
+                assigned = concern.get('assigned_to')
+                if assigned:
+                    staff_profile_obj = None
+                    try:
+                        staff_profile_obj = await UserIdService.get_staff_profile_from_staff_id(assigned)
+                    except Exception:
+                        staff_profile_obj = None
+
+                    if not staff_profile_obj:
+                        try:
+                            staff_profile_obj = await UserIdService.get_user_profile(assigned)
+                        except Exception:
+                            staff_profile_obj = None
+
+                    if staff_profile_obj:
+                        concern['staff_profile'] = {
+                            'first_name': getattr(staff_profile_obj, 'first_name', None),
+                            'last_name': getattr(staff_profile_obj, 'last_name', None),
+                            'phone_number': getattr(staff_profile_obj, 'phone_number', None),
+                            'staff_id': getattr(staff_profile_obj, 'staff_id', None),
+                            'full_name': f"{getattr(staff_profile_obj, 'first_name', '')} {getattr(staff_profile_obj, 'last_name', '')}".strip()
+                        }
+                concern_slip_objects.append(ConcernSlip(**concern))
+            except Exception:
+                continue
         
         # Sort by creation date (latest first)
         concern_slip_objects.sort(key=lambda slip: slip.created_at, reverse=True)
