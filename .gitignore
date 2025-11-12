@@ -1,7 +1,8 @@
-.env
+git .env
 firebase-service-account.json
 __pycache__/
 *.pyc
 .pytest_cache/
 .app/models/facilityfix-ai
 app/models/facilityfix-ai
+venv/
