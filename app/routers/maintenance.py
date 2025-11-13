@@ -25,7 +25,7 @@ def _compute_next_due_date(start_date: datetime, recurrence_type: str) -> Option
     - "Every 1 month", "3 months"
     - "Every 2 weeks", "2 weeks"
     - "monthly", "quarterly", "yearly"
-    - "daily", "weekly", "biweekly"
+    - "weekly", "biweekly"
     - "none" or empty = no recurrence
 
     Returns:
@@ -39,7 +39,6 @@ def _compute_next_due_date(start_date: datetime, recurrence_type: str) -> Option
 
         # Check for named recurrence patterns first (monthly, quarterly, etc.)
         named_patterns = {
-            "daily": (1, "day"),
             "weekly": (1, "week"),
             "biweekly": (2, "week"),
             "bi-weekly": (2, "week"),
@@ -75,8 +74,6 @@ def _compute_next_due_date(start_date: datetime, recurrence_type: str) -> Option
             unit = unit[:-1]
 
         # Calculate next occurrence
-        if unit == "day":
-            return start_date + timedelta(days=amount)
         elif unit == "week":
             return start_date + timedelta(weeks=amount)
         elif unit == "month":
@@ -115,9 +112,9 @@ class MaintenanceTaskCreate(BaseModel):
     location: str
     scheduled_date: datetime
     assigned_to: Optional[str] = None
-    category: Optional[str] = "preventive"
-    priority: Optional[str] = "medium"
-    task_type: Optional[str] = "scheduled"
+    category: Optional[str] = ""
+    priority: Optional[str] = ""
+    task_type: Optional[str] = "new"
     maintenance_type: Optional[str] = None  # internal, external, ipm, epm
     scheduled_time_slot: Optional[str] = None
     estimated_duration: Optional[int] = Field(default=None, ge=1)  # At least 1 minute
@@ -136,9 +133,8 @@ class MaintenanceTaskCreate(BaseModel):
     
     # External maintenance contractor fields
     contractor_name: Optional[str] = None
-    contact_person: Optional[str] = None
+    contact_email: Optional[str] = None
     contact_number: Optional[str] = None
-    email: Optional[str] = None
     service_category: Optional[str] = None
     department: Optional[str] = None
     
@@ -154,6 +150,8 @@ class MaintenanceTaskCreate(BaseModel):
     assessment: Optional[str] = None
     recommendation: Optional[str] = None
     admin_notification: Optional[str] = None
+    # Notes for admins to attach to a task
+    admin_notes: Optional[str] = None
     
     # Date fields that might come from frontend
     date_created: Optional[str] = None
@@ -194,9 +192,8 @@ class MaintenanceTaskUpdate(BaseModel):
     
     # External maintenance contractor fields
     contractor_name: Optional[str] = None
-    contact_person: Optional[str] = None
+    contact_email: Optional[str] = None
     contact_number: Optional[str] = None
-    email: Optional[str] = None
     service_category: Optional[str] = None
     department: Optional[str] = None
     
@@ -207,6 +204,8 @@ class MaintenanceTaskUpdate(BaseModel):
     assessment: Optional[str] = None
     recommendation: Optional[str] = None
     admin_notification: Optional[str] = None
+    # Admin-editable notes
+    admin_notes: Optional[str] = None
     
     # Date fields
     service_date_actual: Optional[str] = None

@@ -4,7 +4,6 @@ from app.models.database_models import JobService, UserProfile, ConcernSlip, Not
 from app.database.database_service import DatabaseService
 from app.services.user_id_service import UserIdService
 import uuid
-from app.services.job_service_id_service import job_service_id_service
 
 class JobServiceService:
     def __init__(self):
@@ -29,17 +28,8 @@ class JobServiceService:
 
         job_service_id = f"job_{str(uuid.uuid4())[:8]}"
 
-        # Ensure there's a formatted job service id available; prefer provided value, otherwise generate
-        formatted_id = job_data.get("formatted_id") if job_data else None
-        if not formatted_id:
-            try:
-                formatted_id = await job_service_id_service.generate_job_service_id()
-            except Exception:
-                formatted_id = None
-
         job_service_data = {
             "id": job_service_id,
-            "formatted_id": formatted_id,
             "concern_slip_id": concern_slip_id,
             "created_by": created_by,
             "title": job_data.get("title") or concern_slip_data.get("title"),
@@ -51,8 +41,6 @@ class JobServiceService:
             "assigned_to": job_data.get("assigned_to"),
             "scheduled_date": job_data.get("scheduled_date"),
             "estimated_hours": job_data.get("estimated_hours"),
-            # Preserve any additional notes passed from the request
-            "additional_notes": job_data.get("additional_notes"),
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
@@ -290,67 +278,47 @@ class JobServiceService:
                 enriched_data["requested_by"] = created_by_uid
                 enriched_data["requested_by_name"] = "Unknown User"
 
-        # Enrich assigned staff info so frontend can display staff name
-        try:
-            assigned_to = job_service_data.get('assigned_to')
-            if assigned_to:
-                staff_profile = None
-                # Try to find by user_id
-                try:
-                    success, user_docs, error = await self.db.query_documents(
-                        "users",
-                        [("user_id", "==", assigned_to)],
-                        limit=1
-                    )
-                    if success and user_docs:
-                        user = user_docs[0]
-                    else:
-                        # Try by staff_id
-                        success, user_docs, error = await self.db.query_documents(
-                            "users",
-                            [("staff_id", "==", assigned_to)],
-                            limit=1
-                        )
-                        user = user_docs[0] if success and user_docs else None
-
-                    if user:
-                        staff_profile = {
-                            'staff_id': user.get('staff_id') or user.get('user_id'),
-                            'first_name': user.get('first_name'),
-                            'last_name': user.get('last_name'),
-                            'full_name': f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
-                        }
-
-                except Exception:
-                    staff_profile = None
-
-                if staff_profile:
-                    enriched_data['staff_profile'] = staff_profile
-                    enriched_data['assigned_staff_name'] = staff_profile.get('full_name')
-                else:
-                    # Fallback to raw assigned_to value
-                    enriched_data['assigned_staff_name'] = assigned_to
-        except Exception as e:
-            print(f"[JobServiceService] Error enriching assigned staff info: {e}")
-
         return enriched_data
 
     async def get_job_service(self, job_service_id: str) -> Optional[JobService]:
         """Get job service by ID from either collection"""
+        print(f"[JobServiceService] Looking for job service with ID: {job_service_id}")
+        
         # Try job_services collection first
         success, jobs_data, error = await self.db.query_documents("job_services", [("id", job_service_id)])
         if success and jobs_data and len(jobs_data) > 0:
-            # Enrich with user information
+            print(f"[JobServiceService] Found job service in job_services collection")
             enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            if enriched_data.get("completion_notes"):
+                enriched_data["assessment"] = enriched_data["completion_notes"]
+            if enriched_data.get("assessed_by"):
+                # Get staff name for assessment
+                try:
+                    staff_profile = await self.user_service.get_user_profile(enriched_data["assessed_by"])
+                    if staff_profile:
+                        enriched_data["assessed_by_name"] = f"{staff_profile.first_name} {staff_profile.last_name}"
+                except Exception:
+                    pass
             return JobService(**enriched_data)
 
         # If not found, try job_service_requests collection
         success, jobs_data, error = await self.db.query_documents("job_service_requests", [("id", job_service_id)])
         if success and jobs_data and len(jobs_data) > 0:
-            # Enrich with user information
+            print(f"[JobServiceService] Found job service in job_service_requests collection")
             enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            if enriched_data.get("completion_notes"):
+                enriched_data["assessment"] = enriched_data["completion_notes"]
+            if enriched_data.get("assessed_by"):
+                # Get staff name for assessment
+                try:
+                    staff_profile = await self.user_service.get_user_profile(enriched_data["assessed_by"])
+                    if staff_profile:
+                        enriched_data["assessed_by_name"] = f"{staff_profile.first_name} {staff_profile.last_name}"
+                except Exception:
+                    pass
             return JobService(**enriched_data)
 
+        print(f"[JobServiceService] Job service not found in either collection")
         return None
 
     async def get_job_services_by_staff(self, staff_id: str) -> List[JobService]:
@@ -358,35 +326,14 @@ class JobServiceService:
         success, jobs_data, error = await self.db.query_documents("job_services", [("assigned_to", staff_id)])
         if not success or not jobs_data:
             return []
-        result: List[JobService] = []
-        for job in jobs_data:
-            try:
-                enriched = await self._enrich_job_service_with_user_info(job)
-                result.append(JobService(**enriched))
-            except Exception:
-                # Fallback: return raw job if enrichment or model construction fails for one item
-                try:
-                    result.append(JobService(**job))
-                except Exception:
-                    continue
-        return result
+        return [JobService(**job) for job in jobs_data]
 
     async def get_job_services_by_status(self, status: str) -> List[JobService]:
         """Get all job services with specific status"""
         success, jobs_data, error = await self.db.query_documents("job_services", [("status", status)])
         if not success or not jobs_data:
             return []
-        result: List[JobService] = []
-        for job in jobs_data:
-            try:
-                enriched = await self._enrich_job_service_with_user_info(job)
-                result.append(JobService(**enriched))
-            except Exception:
-                try:
-                    result.append(JobService(**job))
-                except Exception:
-                    continue
-        return result
+        return [JobService(**job) for job in jobs_data]
 
     async def get_all_job_services(self) -> List[JobService]:
         """Get all job services (admin only) - from both job_services and job_service_requests collections"""
@@ -417,45 +364,75 @@ class JobServiceService:
                         continue
                     
                     
-                    # Enrich the raw job record with user and staff info
-                    enriched_job = await self._enrich_job_service_with_user_info(job)
-                    # Use enrichment to populate staff_profile/assigned_staff_name if available
-                    staff_profile = enriched_job.get('staff_profile')
-
-                    # Keep created_by display as before when available
-                    created_by = job.get("created_by")
-                    try:
-                        created_profile = await self.user_service.get_user_profile(created_by)
-                        created_by_display = created_profile.first_name + " " + created_profile.last_name if created_profile else created_by
-                    except Exception:
-                        created_by_display = created_by
-
-                    # Build JobService using enriched fields where available
-                    job_service = JobService(
-                        id=job.get("id", ""),
-                        concern_slip_id=concern_slip_id,
-                        created_by=created_by_display,
-                        title=job.get("title", "Job Service"),
-                        description=job.get("description", ""),
-                        location=job.get("location", ""),
-                        category=job.get("category", ""),
-                        priority=job.get("priority", ""),
-                        status=job.get("status", "pending"),
-                        created_at=job.get("created_at", datetime.utcnow()),
-                        updated_at=job.get("updated_at", datetime.utcnow()),
-                        # Optional fields
-                        staff_profile=staff_profile,
-                        assigned_to=job.get("assigned_to"),
-                        scheduled_date=job.get("scheduled_date"),
-                        estimated_hours=job.get("estimated_hours"),
-                        materials_used=job.get("materials_used", []),
-                        staff_notes=job.get("staff_notes"),
-                        completion_notes=job.get("completion_notes"),
-                        started_at=job.get("started_at"),
-                        completed_at=job.get("completed_at"),
-                        actual_hours=job.get("actual_hours")
-                    )
-                    result.append(job_service)
+                    created_by = job.get("created_by")   
+                    print("CREATED BY:", created_by )
+                    created_by = await self.user_service.get_user_profile(created_by)
+                    created_by = created_by.first_name + " " + created_by.last_name if created_by else "Unknown"
+                    staff_profile = await self.user_service.get_staff_profile_from_staff_id(job.get("assigned_to"))  
+                    print("ASSIGNED TO: ", job.get("assigned_to") )
+                    print("STAFF PROFILE: ", staff_profile )
+                    print(type(staff_profile))
+                    # Create a more flexible JobService object
+                    if staff_profile:
+                        job["staff_profile"] = {
+                            "staff_id": staff_profile.staff_id,
+                            "first_name": staff_profile.first_name,
+                            "last_name": staff_profile.last_name,
+                            "phone_number": staff_profile.phone_number
+                        }
+                        
+                    if staff_profile:
+                        job_service = JobService(
+                            id=job.get("id", ""),
+                            concern_slip_id=concern_slip_id,
+                            created_by=created_by,
+                            title=job.get("title", "Job Service"),
+                            description=job.get("description", ""),
+                            location=job.get("location", ""),
+                            category=job.get("category", "general"),
+                            priority=job.get("priority", "medium"),
+                            status=job.get("status", "pending"),
+                            created_at=job.get("created_at", datetime.utcnow()),
+                            updated_at=job.get("updated_at", datetime.utcnow()),
+                            # Optional fields
+                            staff_profile=job.get("staff_profile"),
+                            assigned_to=job.get("assigned_to"),
+                            scheduled_date=job.get("scheduled_date"),
+                            estimated_hours=job.get("estimated_hours"),
+                            materials_used=job.get("materials_used", []),
+                            staff_notes=job.get("staff_notes"),
+                            completion_notes=job.get("completion_notes"),
+                            started_at=job.get("started_at"),
+                            completed_at=job.get("completed_at"),
+                            actual_hours=job.get("actual_hours")
+                        )
+                        result.append(job_service)
+                        
+                    else: 
+                        job_service = JobService(
+                            id=job.get("id", ""),
+                            concern_slip_id=concern_slip_id,
+                            created_by=created_by,
+                            title=job.get("title", "Job Service"),
+                            description=job.get("description", ""),
+                            location=job.get("location", ""),
+                            category=job.get("category", "general"),
+                            priority=job.get("priority", "medium"),
+                            status=job.get("status", "pending"),
+                            created_at=job.get("created_at", datetime.utcnow()),
+                            updated_at=job.get("updated_at", datetime.utcnow()),
+                            # Optional fields
+                            assigned_to=job.get("assigned_to"),
+                            scheduled_date=job.get("scheduled_date"),
+                            estimated_hours=job.get("estimated_hours"),
+                            materials_used=job.get("materials_used", []),
+                            staff_notes=job.get("staff_notes"),
+                            completion_notes=job.get("completion_notes"),
+                            started_at=job.get("started_at"),
+                            completed_at=job.get("completed_at"),
+                            actual_hours=job.get("actual_hours")
+                        )
+                        result.append(job_service)
                 except Exception as e:
                     print(f"Warning: Could not create JobService object for {job.get('id', 'unknown')}: {e}")
                     # Continue with next job instead of failing completely
@@ -497,8 +474,10 @@ class JobServiceService:
             if user_role != "tenant":
                 raise ValueError("Only tenants can create tenant job services")
 
+        job_service_id = str(uuid.uuid4())
+        
         job_service_data = {
-            "id": str(uuid.uuid4()),
+            "id": job_service_id,
             "concern_slip_id": concern_slip_id,
             "created_by": created_by,
             "title": job_data.get("title") or concern_slip_data.get("title"),

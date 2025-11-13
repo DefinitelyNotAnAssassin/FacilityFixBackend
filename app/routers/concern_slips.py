@@ -43,7 +43,6 @@ class SubmitAssessmentRequest(BaseModel):
 
 class SetResolutionTypeRequest(BaseModel):
     resolution_type: str  # job_service, work_order
-    admin_notes: Optional[str] = None
 
 class AIReprocessRequest(BaseModel):
     force_translate: bool = False
@@ -52,15 +51,29 @@ class AIReprocessRequest(BaseModel):
 async def upload_concern_slip_attachment(
     concern_slip_id: str,
     current_user: dict = Depends(get_current_user),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    attachment_type: str = "tenant"  # "tenant" (from requester) or "staff" (from assessment)
 ):
+    
     """
     Upload an attachment to a concern slip.
-    - Tenants can only attach files to their own pending concern slips
-    - Staff can attach assessment files to their assigned concern slips
-    - Admin can attach files to any concern slip
+    
+    **Attachment Types:**
+    - tenant: Uploaded by the requester (tenant) when creating/editing the concern slip
+    - staff: Uploaded by assigned staff during assessment phase
+    
+    **Permission Rules:**
+    - Tenants can only upload "tenant" type attachments to their own pending concern slips
+    - Staff can only upload "staff" type attachments to their assigned concern slips during assessment
+    - Admin can upload both types to any concern slip
     """
     try:
+        if attachment_type not in ["tenant", "staff"]:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid attachment_type. Must be 'tenant' or 'staff'"
+            )
+        
         concern_service = ConcernSlipService()
         concern_slip = await concern_service.get_concern_slip(concern_slip_id)
         
@@ -71,39 +84,54 @@ async def upload_concern_slip_attachment(
         user_role = current_user.get("role", "").lower()
         user_id = current_user.get("uid")
         
-        # Tenant can only upload to their own pending slips
+        # Tenant can only upload to their own pending slips (tenant attachments)
         if user_role == "tenant":
             if concern_slip.reported_by != user_id:
                 raise HTTPException(status_code=403, detail="You can only upload attachments to your own concern slips")
             if concern_slip.status != "pending":
                 raise HTTPException(status_code=400, detail="Attachments can only be added to pending concern slips")
+            if attachment_type != "tenant":
+                raise HTTPException(status_code=403, detail="Tenants can only upload tenant attachments")
                 
-        # Staff can only upload to their assigned slips during assessment
+        # Staff can only upload to their assigned slips during assessment (staff attachments)
         elif user_role == "staff":
-            if concern_slip.assigned_to != user_id:
+            # Get staff_id from user profile
+            from app.database.database_service import database_service
+            success, user_data, error = await database_service.get_document("users", user_id)
+            if not success or not user_data:
+                raise HTTPException(status_code=403, detail="Staff profile not found")
+            
+            staff_id = user_data.get('staff_id')
+            if concern_slip.assigned_to != staff_id:
                 raise HTTPException(status_code=403, detail="You can only upload attachments to concern slips assigned to you")
             if concern_slip.status != "assigned":
                 raise HTTPException(status_code=400, detail="Staff can only add attachments during assessment phase")
+            if attachment_type != "staff":
+                raise HTTPException(status_code=403, detail="Staff must upload assessment attachments (attachment_type=staff)")
                 
-        # Admin can upload to any slip
+        # Admin can upload to any slip (both types allowed)
         elif user_role != "admin":
             raise HTTPException(status_code=403, detail="Access denied")
 
         file_metadata = await concern_service.upload_attachment(
             concern_slip_id=concern_slip_id,
             file=file,
-            uploaded_by=current_user.get("uid")
+            uploaded_by=current_user.get("uid"),
+            attachment_type=attachment_type
         )
         
         return {
-            "message": "File uploaded successfully",
+            "success": True,
+            "message": f"{attachment_type.capitalize()} attachment uploaded successfully",
             "attachment_id": file_metadata.get('id'),
-            "file_url": file_metadata.get('public_url')
+            "file_url": file_metadata.get('download_url'),
+            "attachment_type": attachment_type
         }
         
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error uploading attachment: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
 
 @router.get("/{concern_slip_id}/attachments")
@@ -111,6 +139,7 @@ async def list_concern_slip_attachments(
     concern_slip_id: str,
     current_user: dict = Depends(get_current_user)
 ):
+    
     """
     List all attachments for a concern slip.
     - Tenants can only view their own concern slip attachments
@@ -385,8 +414,8 @@ async def get_concern_slip_by_id(
             "created_at": concern_slip.created_at.isoformat() if concern_slip.created_at else None,
             "updated_at": concern_slip.updated_at.isoformat() if concern_slip.updated_at else None,
             "request_type": getattr(concern_slip, 'request_type', 'Concern Slip'),
-            "attachments": getattr(concern_slip, 'attachments', []),
-            "assessment_attachments": getattr(concern_slip, 'assessment_attachments', []),
+            "attachments": getattr(concern_slip, 'attachments', []),  # Tenant attachments
+            "assessment_attachments": getattr(concern_slip, 'assessment_attachments', []),  # Staff attachments
             "staff_assessment": getattr(concern_slip, 'staff_assessment', None),
             "staff_recommendation": getattr(concern_slip, 'staff_recommendation', None),
             "admin_notes": getattr(concern_slip, 'admin_notes', None),

@@ -42,6 +42,10 @@ class UpdateJobStatusRequest(BaseModel):
 class AddNotesRequest(BaseModel):
     notes: str
 
+class SubmitCompletionAssessmentRequest(BaseModel):
+    assessment: str
+    attachments: Optional[List[str]] = []
+
 async def _create_job_service_logic(
     request: CreateJobServiceRequest,
     current_user: dict
@@ -440,7 +444,6 @@ async def delete_job_service_attachment(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {str(e)}")
 
-
 @router.delete("/{job_service_id}")
 async def delete_job_service(
     job_service_id: str,
@@ -500,3 +503,74 @@ async def delete_job_service(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete job service: {str(e)}")
+
+@router.patch("/{job_service_id}/submit-completion-assessment", response_model=dict)
+async def submit_completion_assessment(
+    job_service_id: str,
+    request: SubmitCompletionAssessmentRequest,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["admin", "staff"]))
+):
+    """Submit completion assessment for job service and mark as completed (Staff only)"""
+    try:
+        from app.database.database_service import DatabaseService
+        
+        db = DatabaseService()
+        
+        # Get the job service to verify it exists and get concern slip ID
+        success, jobs_data, error = await db.query_documents("job_services", [("id", "==", job_service_id)])
+        
+        if not success or not jobs_data or len(jobs_data) == 0:
+            # Try job_service_requests collection
+            success, jobs_data, error = await db.query_documents("job_service_requests", [("id", "==", job_service_id)])
+            collection_name = "job_service_requests"
+        else:
+            collection_name = "job_services"
+        
+        if not success or not jobs_data or len(jobs_data) == 0:
+            raise HTTPException(status_code=404, detail="Job service not found")
+        
+        job_data = jobs_data[0]
+        
+        # Update job service with completion assessment and set status to completed
+        update_data = {
+            "completion_notes": request.assessment,
+            "assessment_attachments": request.attachments,
+            "assessed_by": current_user["uid"],
+            "assessed_at": datetime.utcnow(),
+            "status": "completed",
+            "completed_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        # Update job service
+        firestore_doc_id = job_data.get("_doc_id")
+        if not firestore_doc_id:
+            raise HTTPException(status_code=500, detail="Could not find Firestore document ID")
+        
+        success, error = await db.update_document(collection_name, firestore_doc_id, update_data)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to update job service: {error}")
+        
+        # Update related concern slip status to completed if it exists
+        concern_slip_id = job_data.get("concern_slip_id")
+        if concern_slip_id:
+            try:
+                await db.update_document("concern_slips", concern_slip_id, {
+                    "status": "completed",
+                    "updated_at": datetime.utcnow()
+                }, validate=False)
+            except Exception as e:
+                print(f"Failed to update concern slip status: {e}")
+        
+        return {
+            "success": True,
+            "message": "Job service marked as completed with assessment",
+            "job_service_id": job_service_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to submit completion assessment: {str(e)}")

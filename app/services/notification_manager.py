@@ -1028,7 +1028,7 @@ class NotificationManager:
         target_user_ids: Optional[List[str]] = None,
         building_id: Optional[str] = None,
         priority: str = "normal",
-        announcement_type: str = "general"
+        announcement_type: str = ""
     ) -> bool:
         """Notify target audience about new announcement"""
         try:

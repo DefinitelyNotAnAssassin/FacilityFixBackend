@@ -235,7 +235,7 @@ class MaintenanceTaskService:
             "status": payload.get("status") or "scheduled",
             "task_type": task_type,
             "maintenance_type": maintenance_type,
-            "recurrence_type": payload.get("recurrence_type") or "none",
+            "recurrence_type": payload.get("recurrence_type") or "",
             "assigned_to": payload.get("assigned_to") or "unassigned",
             "created_by": created_by,
             "created_at": now,
@@ -245,12 +245,8 @@ class MaintenanceTaskService:
             "category": payload.get("category") or "",
             "location": payload.get("location") or "",
             "building_id": payload.get("building_id") or "default_building",
-            # Support free-form notes / legacy `notes` field
-            "additional_notes": (
-                payload.get("additional_notes")
-                or payload.get("notes")
-                or ""
-            ) + f" (created_by={created_by} at {now.isoformat()})",
+            # Use admin_notes
+            "admin_notes": payload.get("admin_notes") or "",
         }
 
         normalized = self._normalize_document(data)
@@ -281,6 +277,19 @@ class MaintenanceTaskService:
                 pass
 
         update_payload["updated_at"] = datetime.utcnow()
+
+        # Persist the updates to the database and return the refreshed task
+        success, error = await self.db.update_document(
+            COLLECTIONS["maintenance_tasks"],
+            task_id,
+            update_payload,
+            validate=False,
+        )
+
+        if not success:
+            raise ValueError(error or "Failed to update maintenance task")
+
+        return await self.get_task(task_id)
 
     async def mark_inventory_request_received(self, request_id: str, performed_by: str, condition: str = "ok", notes: Optional[str] = None) -> Dict[str, Any]:
         """Mark an inventory_request as received by tenant/staff.
@@ -456,18 +465,6 @@ class MaintenanceTaskService:
 
         return result
 
-        success, error = await self.db.update_document(
-            COLLECTIONS["maintenance_tasks"],
-            task_id,
-            update_payload,
-            validate=False,
-        )
-
-        if not success:
-            raise ValueError(error or "Failed to update maintenance task")
-
-        return await self.get_task(task_id)
-
     async def delete_task(self, task_id: str) -> bool:
         """Delete a maintenance task."""
         success, error = await self.db.delete_document(
@@ -529,6 +526,10 @@ class MaintenanceTaskService:
         for field, default_value in required_defaults.items():
             if field not in normalized or normalized[field] is None or normalized[field] == '':
                 normalized[field] = default_value
+
+        # Preserve admin_notes if present; default to empty string
+        if 'admin_notes' not in normalized:
+            normalized['admin_notes'] = ''
         
         # Handle scheduled_date specifically
         if 'scheduled_date' not in normalized or normalized['scheduled_date'] is None:

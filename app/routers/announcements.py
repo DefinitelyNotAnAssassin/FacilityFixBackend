@@ -154,25 +154,9 @@ async def create_announcement(
         if success:
             logger.info(f"Announcement created: {announcement_id} by {current_user['uid']}")
 
-            # Send notifications if requested
-            if request.send_notifications:
-                try:
-                    await notification_manager.notify_announcement_published(
-                        announcement_id=announcement_id,
-                        title=request.title,
-                        content=request.content,
-                        target_audience=request.audience,
-                        target_roles=request.target_roles,
-                        target_departments=request.target_departments,
-                        target_user_ids=request.target_user_ids,
-                        building_id=request.building_id,
-                        priority=request.priority_level,
-                        announcement_type=request.type
-                    )
-                    logger.info(f"Notifications sent for announcement {announcement_id}")
-                except Exception as notif_error:
-                    logger.error(f"Failed to send notifications for announcement {announcement_id}: {str(notif_error)}")
-                    # Don't fail the whole request if notifications fail
+            # Notification broadcasting is handled inside the AnnouncementService
+            # when an announcement is published (immediate or scheduled). Do not
+            # call the notification manager here to avoid duplicate notifications.
 
             return {
                 "success": True,

@@ -9,8 +9,8 @@ class AnnouncementIdService:
     @staticmethod
     async def generate_announcement_id() -> str:
         """
-        Generate next available announcement ID in format: N-YYYY-NNNNN
-        Example: N-2025-00001, N-2025-00002, etc.
+        Generate next available announcement ID in format: ANN-YYYY-NNNNN
+        Example: ANN-2025-00001, ANN-2025-00002, etc.
         
         This uses Firestore's atomic increment to ensure uniqueness even with concurrent requests.
         """
@@ -62,8 +62,8 @@ class AnnouncementIdService:
                 logger.error(f"Failed to increment announcement counter: {update_error}")
                 raise Exception(f"Failed to increment announcement counter: {update_error}")
         
-        # Generate formatted ID: N-YYYY-NNNNN (5 digits with leading zeros)
-        formatted_id = f"N-{current_year}-{next_number:05d}"
+        # Generate formatted ID: ANN-YYYY-NNNNN (5 digits with leading zeros)
+        formatted_id = f"ANN-{current_year}-{next_number:05d}"
         logger.info(f"Generated unique announcement ID: {formatted_id}")
         
         return formatted_id
