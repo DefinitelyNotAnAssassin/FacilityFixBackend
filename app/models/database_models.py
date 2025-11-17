@@ -33,7 +33,7 @@ class Equipment(BaseModel):
     serial_number: Optional[str] = None
     location: str
     department: Optional[str] = None
-    status: str = Field(default="active")  # active, under_repair, inactive
+    status: str 
     is_critical: bool = Field(default=False)
     date_added: Optional[datetime] = None
     created_at: Optional[datetime] = None
@@ -91,7 +91,7 @@ class InventoryRequest(BaseModel):
     purpose: str  # job_service, maintenance, emergency, etc.
     reference_id: Optional[str] = None  # job_service_id or maintenance_task_id
     priority: str = Field(default="normal")  # low, normal, high, urgent
-    status: str = Field(default="pending")  # pending, approved, denied, fulfilled, cancelled
+    status: str = Field(default="pending")  # pending, approved, denied, recieved
     justification: Optional[str] = None
     admin_notes: Optional[str] = None
     requested_date: Optional[datetime] = None
@@ -99,6 +99,25 @@ class InventoryRequest(BaseModel):
     fulfilled_date: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+class InventoryReservation(BaseModel):
+    id: Optional[str] = None
+    inventory_id: str  # This should be the item code (e.g., "EQP-PLB-3643")
+    created_by: str
+    maintenance_task_id: str
+    quantity: int  # Change from quantity_reserved
+    current_stock: int  # Stock level at time of reservation
+    purpose: str = Field(default="")
+    status: str = Field(default="reserved")  # reserved, received
+    reserved_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    # Defective item tracking
+    is_defective: bool = Field(default=False)
+    defective_reason: Optional[str] = None
+    replacement_requested: bool = Field(default=False)
+    replacement_request_id: Optional[str] = None
 
 class LowStockAlert(BaseModel):
     id: Optional[str] = None
@@ -108,11 +127,12 @@ class LowStockAlert(BaseModel):
     current_stock: int
     reorder_level: int
     alert_level: str  # low, critical, out_of_stock
-    status: str = Field(default="active")  # active, acknowledged, resolved
+    status: str = Field(default="low stock")  # low stock
     acknowledged_by: Optional[str] = None  # admin user_id
     acknowledged_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 class InventoryUsageAnalytics(BaseModel):
     id: Optional[str] = None
@@ -272,7 +292,7 @@ class MaintenanceTask(BaseModel):
     actual_duration: Optional[int] = None  # in minutes
 
     # Recurrence handling
-    recurrence_type: str = Field(default="none")  # none, daily, weekly, monthly, quarterly, yearly, custom
+    recurrence_type: str = Field(default="none")  # none, weekly, monthly, quarterly, yearly, custom
     parent_task_id: Optional[str] = None  # for recurring tasks
     next_occurrence: Optional[datetime] = None
 
@@ -282,6 +302,7 @@ class MaintenanceTask(BaseModel):
     inventory_request_ids: Optional[List[str]] = []  # IDs of linked inventory requests
     
     # Documentation
+    admin_notes: Optional[str] = None
     completion_notes: Optional[str] = None
     checklist_completed: Optional[List[dict]] = []  # completed checklist items
     photos: Optional[List[str]] = []  # photo URLs
@@ -319,7 +340,7 @@ class MaintenanceSchedule(BaseModel):
     schedule_type: str = Field(default="time_based")  # time_based, usage_based, condition_based
     
     # Time-based scheduling
-    recurrence_pattern: Optional[str] = None  # daily, weekly, monthly, quarterly, yearly, custom
+    recurrence_pattern: Optional[str] = None  # weekly, monthly, quarterly, yearly, custom
     interval_value: Optional[int] = None  # e.g., every 2 weeks, every 3 months
     specific_days: Optional[List[str]] = []  # for weekly: ["monday", "friday"]
     specific_dates: Optional[List[int]] = []  # for monthly: [1, 15] (1st and 15th)
@@ -438,8 +459,8 @@ class Announcement(BaseModel):
     building_id: str
     title: str
     content: str
-    type: str = Field(default="general")  # maintenance, reminder, event, policy, emergency, general
-    audience: str = Field(default="all")  # tenants, staff, admins, all, department, specific_users
+    type: str = Field(default="")  # maintenance, reminder, event, policy, emergency, general
+    audience: str = Field(default="")  # tenants, staff, admins, all, department, specific_users
     location_affected: Optional[str] = None
     is_active: bool = Field(default=True)
     
@@ -491,7 +512,7 @@ class UserProfile(BaseModel):
     staff_department: Optional[str] = None  # Legacy single staff department
     staff_departments: Optional[List[str]] = []  # New: Multiple staff departments
     role: str  # admin, staff, tenant
-    status: str = Field(default="active")  # active, suspended, inactive
+    status: str = Field(default="")  # active, suspended, inactive
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     user_id: Optional[str] = None

@@ -11,10 +11,6 @@ from ..models.database_models import (
 from firebase_admin import firestore 
 
 
-
-
-
-
 logger = logging.getLogger(__name__)
 
 class MaintenanceSchedulerService:
@@ -208,6 +204,7 @@ class MaintenanceSchedulerService:
             'status': 'scheduled',
             'recurrence_type': schedule.recurrence_pattern or 'none',
             'required_parts': schedule.required_parts or template_data.get('required_parts', []),
+            'admin_notes': '',  # Admin notes for scheduled tasks
             'created_by': 'system',
             'created_at': datetime.now(),
             'updated_at': datetime.now()
@@ -363,10 +360,7 @@ class MaintenanceSchedulerService:
             
             base_date = datetime.now()
             
-            if schedule.recurrence_pattern == 'daily':
-                return base_date + timedelta(days=schedule.interval_value or 1)
-            
-            elif schedule.recurrence_pattern == 'weekly':
+            if schedule.recurrence_pattern == 'weekly':
                 days_ahead = (schedule.interval_value or 1) * 7
                 next_date = base_date + timedelta(days=days_ahead)
                 
@@ -417,10 +411,7 @@ class MaintenanceSchedulerService:
     def _calculate_next_occurrence(self, schedule: MaintenanceSchedule, current_date: datetime) -> datetime:
         """Calculate the next occurrence after current_date"""
         try:
-            if schedule.recurrence_pattern == 'daily':
-                return current_date + timedelta(days=schedule.interval_value or 1)
-            
-            elif schedule.recurrence_pattern == 'weekly':
+            if schedule.recurrence_pattern == 'weekly':
                 return current_date + timedelta(days=7 * (schedule.interval_value or 1))
             
             elif schedule.recurrence_pattern == 'monthly':

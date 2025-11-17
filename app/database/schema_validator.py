@@ -1,9 +1,10 @@
 from typing import Dict, Any, Optional, List
 from pydantic import ValidationError
 from app.models.database_models import (
-    Building, Unit, UserProfile, Equipment, Inventory,
+    Building, Unit, UserProfile, Equipment, Inventory, InventoryTransaction,
+    InventoryRequest, InventoryReservation, LowStockAlert, InventoryUsageAnalytics,
     ConcernSlip, JobService, WorkOrderPermit, MaintenanceTask, Announcement,
-    StatusHistory, Feedback, Counter, Notification, FileAttachment, InventoryRequest  # Added InventoryRequest   model
+    StatusHistory, Feedback, Counter, Notification, FileAttachment
 )
 
 class SchemaValidator:
@@ -15,17 +16,21 @@ class SchemaValidator:
         'users': UserProfile,
         'equipment': Equipment,
         'inventory': Inventory,
+        'inventory_transactions': InventoryTransaction,
         'inventory_requests': InventoryRequest,
+        'inventory_reservations': InventoryReservation,
+        'low_stock_alerts': LowStockAlert,
+        'inventory_usage_analytics': InventoryUsageAnalytics,
         'concern_slips': ConcernSlip,
         'job_services': JobService,
         'work_order_permits': WorkOrderPermit,
         'maintenance_tasks': MaintenanceTask,
         'announcements': Announcement,
-        'notifications': Notification,  # Added notifications collection mapping
+        'notifications': Notification,
         'status_history': StatusHistory,
         'feedback': Feedback,
         'file_attachments': FileAttachment,
-        'counters': Counter  # Added counters collection mapping
+        'counters': Counter
     }
     
     @classmethod

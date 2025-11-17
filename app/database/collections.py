@@ -8,6 +8,7 @@ COLLECTIONS = {
     'inventory': 'inventory',
     'inventory_transactions': 'inventory_transactions',
     'inventory_requests': 'inventory_requests',
+    'inventory_reservations': 'inventory_reservations',
     'low_stock_alerts': 'low_stock_alerts',
     'inventory_usage_analytics': 'inventory_usage_analytics',
     'concern_slips': 'concern_slips',
@@ -70,6 +71,11 @@ COLLECTION_SCHEMAS = {
         'fields': ['inventory_id', 'requested_by', 'approved_by', 'quantity_requested', 'quantity_approved', 'purpose', 'reference_id', 'priority', 'status', 'justification'],
         'required': ['inventory_id', 'requested_by', 'quantity_requested', 'purpose'],
         'indexes': ['inventory_id', 'requested_by', 'approved_by', 'status', 'priority', 'created_at']
+    },
+    'inventory_reservations': {
+        'fields': ['inventory_id', 'created_by', 'maintenance_task_id', 'quantity', 'status', 'reserved_at', 'released_at', 'created_at', 'updated_at'],
+        'required': ['inventory_id', 'created_by', 'maintenance_task_id', 'quantity', 'status'],
+        'indexes': ['inventory_id', 'created_by', 'maintenance_task_id', 'status', 'reserved_at', 'created_at']
     },
     'low_stock_alerts': {
         'fields': ['inventory_id', 'building_id', 'item_name', 'current_stock', 'reorder_level', 'alert_level', 'status', 'acknowledged_by'],

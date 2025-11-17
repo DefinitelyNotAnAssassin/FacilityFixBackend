@@ -77,7 +77,7 @@ def send_reorder_reminders(self):
         
         success, alerts, error = database_service.query_documents(
             COLLECTIONS['low_stock_alerts'],
-            [('status', '==', 'active')]
+            [('status', '==', 'low stock')]
         )
         
         if not success:

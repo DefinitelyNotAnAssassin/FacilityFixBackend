@@ -4,7 +4,7 @@ from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
 from app.services.user_id_service import UserIdService
 from ..models.database_models import (
-    Inventory, InventoryTransaction, InventoryRequest, 
+    Inventory, InventoryTransaction, InventoryRequest, InventoryReservation,
     LowStockAlert, InventoryUsageAnalytics
 )
 import logging
@@ -704,41 +704,54 @@ class InventoryService:
             return False, None, str(e)
 
     async def get_requests_by_maintenance_task(self, maintenance_task_id: str) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
-        """Get all inventory requests linked to a maintenance task"""
+        """Get all inventory requests AND reservations linked to a maintenance task"""
         try:
-            # Try both maintenance_task_id and reference_id fields
+            # Get inventory requests (traditional requests for new parts)
             success1, requests1, _ = await self.db.query_documents(
                 COLLECTIONS['inventory_requests'],
                 [('maintenance_task_id', '==', maintenance_task_id)]
             )
-            
+
             success2, requests2, _ = await self.db.query_documents(
                 COLLECTIONS['inventory_requests'],
                 [('reference_id', '==', maintenance_task_id)]
             )
-            
+
+            # Get inventory reservations (parts reserved for this task)
+            success3, reservations, _ = await self.db.query_documents(
+                COLLECTIONS['inventory_reservations'],
+                [('maintenance_task_id', '==', maintenance_task_id)]
+            )
+
             # Combine and deduplicate results
-            all_requests = []
+            all_items = []
             seen_ids = set()
-            
-            if success1 and requests1:
-                for req in requests1:
-                    req_id = req.get('_doc_id') or req.get('id')
-                    if req_id and req_id not in seen_ids:
-                        seen_ids.add(req_id)
-                        all_requests.append(req)
-            
-            if success2 and requests2:
-                for req in requests2:
-                    req_id = req.get('_doc_id') or req.get('id')
-                    if req_id and req_id not in seen_ids:
-                        seen_ids.add(req_id)
-                        all_requests.append(req)
-            
-            return True, all_requests, None
-            
+
+            # Add requests
+            for items_list in [requests1, requests2]:
+                if items_list:
+                    for item in items_list:
+                        item_id = item.get('_doc_id') or item.get('id')
+                        if item_id and item_id not in seen_ids:
+                            seen_ids.add(item_id)
+                            # Mark as request type
+                            item['_item_type'] = 'request'
+                            all_items.append(item)
+
+            # Add reservations
+            if success3 and reservations:
+                for reservation in reservations:
+                    res_id = reservation.get('_doc_id') or reservation.get('id')
+                    if res_id and res_id not in seen_ids:
+                        seen_ids.add(res_id)
+                        # Mark as reservation type
+                        reservation['_item_type'] = 'reservation'
+                        all_items.append(reservation)
+
+            return True, all_items, None
+
         except Exception as e:
-            error_msg = f"Error getting inventory requests for maintenance task {maintenance_task_id}: {str(e)}"
+            error_msg = f"Error getting inventory items for maintenance task {maintenance_task_id}: {str(e)}"
             logger.error(error_msg)
             return False, [], error_msg
     
@@ -1022,6 +1035,576 @@ class InventoryService:
                 
         except Exception as e:
             logger.error(f"Failed to auto-fulfill request {request_id}: {str(e)}")
+
+    async def update_inventory_request(self, request_id: str, update_data: Dict[str, Any], updated_by: str) -> Tuple[bool, Optional[str]]:
+        """Update inventory request status and handle stock deduction"""
+        try:
+            # Get current request
+            success, request_data, error = await self.db.get_document(COLLECTIONS['inventory_requests'], request_id)
+            if not success:
+                return False, error or "Request not found"
+            
+            new_status = update_data.get("status")
+            deduct_stock = update_data.get("deduct_stock", False)
+            
+            # Update status
+            update_data["updated_at"] = datetime.now()
+            update_data["updated_by"] = updated_by
+            
+            # If status is 'received' and deduct_stock is True, deduct from inventory
+            if new_status == "received" and deduct_stock:
+                inventory_id = request_data.get("inventory_id")
+                quantity = request_data.get("quantity_approved", request_data.get("quantity_requested", 0))
+                
+                # Get current item stock
+                item_success, item_data, item_error = await self.get_inventory_item(inventory_id)
+                if not item_success:
+                    return False, f"Inventory item not found: {item_error}"
+                
+                current_stock = item_data.get("current_stock", 0)
+                if current_stock < quantity:
+                    return False, f"Insufficient stock: {current_stock} available, {quantity} needed"
+                
+                # Deduct stock
+                new_stock = current_stock - quantity
+                stock_update = {"current_stock": new_stock, "updated_at": datetime.now()}
+                await self.db.update_document(COLLECTIONS['inventory'], inventory_id, stock_update)
+                
+                # Log transaction
+                await self._log_transaction(
+                    inventory_id=inventory_id,
+                    transaction_type="out",
+                    quantity=quantity,
+                    previous_stock=current_stock,
+                    new_stock=new_stock,
+                    reference_type="inventory_request",
+                    reference_id=request_id,
+                    performed_by=updated_by
+                )
+            
+            # Update the request
+            success, error = await self.db.update_document(COLLECTIONS['inventory_requests'], request_id, update_data)
+            return success, error
+            
+        except Exception as e:
+            logger.error(f"Error updating inventory request {request_id}: {str(e)}")
+            return False, str(e)
+
+    async def patch_inventory_item(self, item_id: str, update_data: Dict[str, Any], updated_by: str) -> Tuple[bool, Optional[str]]:
+        """Patch inventory item (e.g., update stock)"""
+        try:
+            update_data["updated_at"] = datetime.now()
+            update_data["updated_by"] = updated_by
+            
+            success, error = await self.db.update_document(COLLECTIONS['inventory'], item_id, update_data)
+            return success, error
+            
+        except Exception as e:
+            logger.error(f"Error patching inventory item {item_id}: {str(e)}")
+            return False, str(e)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # INVENTORY REQUEST MANAGEMENT
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def create_inventory_request(self, request_data: Dict[str, Any]) -> Tuple[bool, str, Optional[str]]:
+        """Create a new inventory request"""
+        try:
+            # Add metadata
+            request_data.update({
+                'status': 'pending',
+                'created_at': datetime.now(),
+                'updated_at': datetime.now()
+            })
+            
+            # Validate and create
+            success, request_id, error = await self.db.create_document(
+                COLLECTIONS['inventory_requests'], 
+                request_data,
+                validate=True
+            )
+            
+            if success:
+                logger.info(f"Inventory request created: {request_id}")
+            
+            return success, request_id, error
+            
+        except Exception as e:
+            logger.error(f"Error creating inventory request: {str(e)}")
+            return False, "", str(e)
+
+    async def get_inventory_requests(self, building_id: Optional[str] = None, status: Optional[str] = None, 
+                                   requested_by: Optional[str] = None, maintenance_task_id: Optional[str] = None) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
+        """Get inventory requests with optional filters"""
+        try:
+            filters = []
+            
+            if building_id:
+                filters.append(('building_id', '==', building_id))
+            
+            if status:
+                filters.append(('status', '==', status))
+            
+            if requested_by:
+                filters.append(('requested_by', '==', requested_by))
+            
+            if maintenance_task_id:
+                filters.append(('maintenance_task_id', '==', maintenance_task_id))
+            
+            success, requests, error = await self.db.query_documents(COLLECTIONS['inventory_requests'], filters)
+            return success, requests, error
+            
+        except Exception as e:
+            logger.error(f"Error getting inventory requests: {str(e)}")
+            return False, [], str(e)
+
+    async def get_inventory_request_by_id(self, request_id: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Get inventory request by ID"""
+        try:
+            success, request_data, error = await self.db.get_document(COLLECTIONS['inventory_requests'], request_id)
+            return success, request_data, error
+            
+        except Exception as e:
+            logger.error(f"Error getting inventory request {request_id}: {str(e)}")
+            return False, None, str(e)
+
+    async def fulfill_inventory_request(self, request_id: str, fulfilled_by: str) -> Tuple[bool, Optional[str]]:
+        """Mark inventory request as fulfilled"""
+        try:
+            update_data = {
+                'status': 'fulfilled',
+                'fulfilled_by': fulfilled_by,
+                'fulfilled_at': datetime.now(),
+                'updated_at': datetime.now()
+            }
+            
+            success, error = await self.db.update_document(COLLECTIONS['inventory_requests'], request_id, update_data)
+            return success, error
+            
+        except Exception as e:
+            logger.error(f"Error fulfilling inventory request {request_id}: {str(e)}")
+            return False, str(e)
+
+    async def approve_inventory_request(self, request_id: str, approved_by: str, quantity_approved: Optional[int] = None, admin_notes: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """Approve an inventory request"""
+        try:
+            # Get current request
+            success, request_data, error = await self.db.get_document(COLLECTIONS['inventory_requests'], request_id)
+            if not success:
+                return False, error or "Request not found"
+            
+            update_data = {
+                'status': 'approved',
+                'approved_by': approved_by,
+                'approved_date': datetime.now(),
+                'quantity_approved': quantity_approved or request_data.get('quantity_requested', 0),
+                'admin_notes': admin_notes,
+                'updated_at': datetime.now()
+            }
+            
+            success, error = await self.db.update_document(COLLECTIONS['inventory_requests'], request_id, update_data)
+            return success, error
+            
+        except Exception as e:
+            logger.error(f"Error approving inventory request {request_id}: {str(e)}")
+            return False, str(e)
+
+    async def deny_inventory_request(self, request_id: str, denied_by: str, admin_notes: str) -> Tuple[bool, Optional[str]]:
+        """Deny an inventory request"""
+        try:
+            update_data = {
+                'status': 'denied',
+                'approved_by': denied_by,  # Using approved_by field for consistency
+                'approved_date': datetime.now(),
+                'admin_notes': admin_notes,
+                'updated_at': datetime.now()
+            }
+            
+            success, error = await self.db.update_document(COLLECTIONS['inventory_requests'], request_id, update_data)
+            return success, error
+            
+        except Exception as e:
+            logger.error(f"Error denying inventory request {request_id}: {str(e)}")
+            return False, str(e)
+
+    async def consume_stock(self, item_id: str, quantity: int, performed_by: str, reference_type: Optional[str] = None, reference_id: Optional[str] = None, reason: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """Consume stock from inventory"""
+        try:
+            # Get current item
+            success, item_data, error = await self.get_inventory_item(item_id)
+            if not success:
+                return False, error or "Item not found"
+            
+            current_stock = item_data.get('current_stock', 0)
+            if current_stock < quantity:
+                return False, f"Insufficient stock: {current_stock} available, {quantity} needed"
+            
+            # Update stock
+            new_stock = current_stock - quantity
+            update_data = {
+                'current_stock': new_stock,
+                'updated_at': datetime.now()
+            }
+            
+            success, error = await self.db.update_document(COLLECTIONS['inventory'], item_id, update_data)
+            if not success:
+                return False, error
+            
+            # Log transaction
+            await self._log_transaction(
+                inventory_id=item_id,
+                transaction_type="out",
+                quantity=quantity,
+                previous_stock=current_stock,
+                new_stock=new_stock,
+                performed_by=performed_by,
+                reference_type=reference_type,
+                reference_id=reference_id,
+                reason=reason
+            )
+            
+            return True, None
+            
+        except Exception as e:
+            logger.error(f"Error consuming stock for item {item_id}: {str(e)}")
+            return False, str(e)
+
+    async def restock_item(self, item_id: str, quantity: int, performed_by: str, cost_per_unit: Optional[float] = None, reason: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """Add stock to inventory"""
+        try:
+            # Get current item
+            success, item_data, error = await self.get_inventory_item(item_id)
+            if not success:
+                return False, error or "Item not found"
+            
+            current_stock = item_data.get('current_stock', 0)
+            new_stock = current_stock + quantity
+            
+            # Update stock
+            update_data = {
+                'current_stock': new_stock,
+                'updated_at': datetime.now()
+            }
+            
+            success, error = await self.db.update_document(COLLECTIONS['inventory'], item_id, update_data)
+            if not success:
+                return False, error
+            
+            # Log transaction
+            await self._log_transaction(
+                inventory_id=item_id,
+                transaction_type="in",
+                quantity=quantity,
+                previous_stock=current_stock,
+                new_stock=new_stock,
+                performed_by=performed_by,
+                reason=reason,
+                cost_per_unit=cost_per_unit
+            )
+            
+            return True, None
+            
+        except Exception as e:
+            logger.error(f"Error restocking item {item_id}: {str(e)}")
+            return False, str(e)
+
+    async def adjust_stock(self, item_id: str, new_quantity: int, performed_by: str, reason: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """Adjust stock to specific quantity"""
+        try:
+            # Get current item
+            success, item_data, error = await self.get_inventory_item(item_id)
+            if not success:
+                return False, error or "Item not found"
+            
+            current_stock = item_data.get('current_stock', 0)
+            quantity_change = new_quantity - current_stock
+            
+            # Update stock
+            update_data = {
+                'current_stock': new_quantity,
+                'updated_at': datetime.now()
+            }
+            
+            success, error = await self.db.update_document(COLLECTIONS['inventory'], item_id, update_data)
+            if not success:
+                return False, error
+            
+            # Log transaction (adjustment)
+            transaction_type = "in" if quantity_change > 0 else "out"
+            await self._log_transaction(
+                inventory_id=item_id,
+                transaction_type="adjustment",
+                quantity=abs(quantity_change),
+                previous_stock=current_stock,
+                new_stock=new_quantity,
+                performed_by=performed_by,
+                reason=reason
+            )
+            
+            return True, None
+            
+        except Exception as e:
+            logger.error(f"Error adjusting stock for item {item_id}: {str(e)}")
+            return False, str(e)
+
+    async def get_low_stock_alerts(self, building_id: Optional[str] = None, status: str = "active") -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
+        """Get low stock alerts with optional filters"""
+        try:
+            filters = [('status', '==', status)]
+            if building_id:
+                filters.append(('building_id', '==', building_id))
+            
+            success, alerts, error = await self.db.query_documents(COLLECTIONS['low_stock_alerts'], filters)
+            return success, alerts, error
+            
+        except Exception as e:
+            logger.error(f"Error getting low stock alerts: {str(e)}")
+            return False, [], str(e)
+
+    async def acknowledge_low_stock_alert(self, alert_id: str, acknowledged_by: str) -> Tuple[bool, Optional[str]]:
+        """Acknowledge a low stock alert"""
+        try:
+            update_data = {
+                'status': 'acknowledged',
+                'acknowledged_by': acknowledged_by,
+                'acknowledged_at': datetime.now()
+            }
+            
+            success, error = await self.db.update_document(COLLECTIONS['low_stock_alerts'], alert_id, update_data)
+            return success, error
+            
+        except Exception as e:
+            logger.error(f"Error acknowledging low stock alert {alert_id}: {str(e)}")
+            return False, str(e)
+
+    async def create_inventory_reservation(self, reservation_data: Dict[str, Any], reserved_by: str) -> Tuple[bool, str, Optional[str]]:
+        """Create a new inventory reservation for maintenance tasks"""
+        try:
+            # Validate quantity
+            if not reservation_data.get('quantity') or reservation_data['quantity'] <= 0:
+                return False, None, "Quantity must be greater than 0"
+            
+            # Get current stock level for the inventory item
+            inventory_id = reservation_data['inventory_id']
+            success, item_data, error = await self.get_inventory_item(inventory_id)
+            if not success or not item_data:
+                return False, None, f"Inventory item not found: {inventory_id}"
+            
+            current_stock = item_data.get('current_stock', 0)
+            
+            # Prepare data with correct fields
+            data = {
+                'inventory_id': inventory_id,  # Should be item code from frontend
+                'created_by': reserved_by,
+                'maintenance_task_id': reservation_data['maintenance_task_id'],
+                'quantity': reservation_data['quantity'],  # Use 'quantity'
+                'current_stock': current_stock,  # Add current stock at time of reservation
+                'purpose': 'maintenance',
+                'status': 'reserved',
+                'reserved_at': datetime.utcnow(),
+                'created_at': datetime.utcnow(),
+            }
+            
+            # Validate and create
+            success, reservation_id, error = await self.db.create_document(
+                COLLECTIONS['inventory_reservations'], 
+                data,
+                validate=True
+            )
+            
+            if success:
+                logger.info(f"Inventory reservation created: {reservation_id}")
+            
+            return success, reservation_id, error
+            
+        except Exception as e:
+            logger.error(f"Error creating inventory reservation: {str(e)}")
+            return False, "", str(e)
+
+    async def get_inventory_reservations(self, filters: Optional[Dict[str, Any]] = None) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
+        """Get inventory reservations with optional filters"""
+        try:
+            query = []
+            if filters:
+                if 'maintenance_task_id' in filters:
+                    query.append(('maintenance_task_id', '==', filters['maintenance_task_id']))
+            
+            success, documents, error = await self.db.query_documents(
+                COLLECTIONS['inventory_reservations'],
+                query
+            )
+            
+            if success:
+                # Map documents to correct field format
+                reservations = []
+                for doc in documents:
+                    reservations.append({
+                        'inventory_id': doc.get('inventory_id'),  # Item code
+                        'quantity': doc.get('quantity') or doc.get('quantity_reserved'),  # Handle both old and new field names
+                        'current_stock': doc.get('current_stock', 0),  # Stock level at time of reservation
+                        'maintenance_task_id': doc.get('maintenance_task_id'),
+                        'created_at': doc.get('reserved_at') or doc.get('created_at'),
+                        'status': doc.get('status', 'reserved'),
+                    })
+                return True, reservations, None
+            else:
+                return success, [], error
+                
+        except Exception as e:
+            logger.error(f"Error getting inventory reservations: {str(e)}")
+            return False, [], str(e)
+
+    async def update_reservation_status(self, reservation_id: str, new_status: str, updated_by: str) -> Tuple[bool, Optional[str]]:
+        """Update inventory reservation status"""
+        try:
+            # Validate status
+            valid_statuses = ['reserved', 'received', 'consumed', 'released']
+            if new_status not in valid_statuses:
+                return False, f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+            
+            # Get current reservation
+            success, reservation_data, error = await self.db.get_document(COLLECTIONS['inventory_reservations'], reservation_id)
+            if not success:
+                return False, f"Reservation not found: {error}"
+            
+            current_status = reservation_data.get('status')
+            if current_status == new_status:
+                return False, f"Reservation is already {new_status}"
+            
+            # Prepare update data
+            update_data = {
+                'status': new_status,
+                'updated_at': datetime.utcnow()
+            }
+            
+            # Add timestamp based on status
+            if new_status == 'received':
+                update_data['received_at'] = datetime.utcnow()
+            elif new_status == 'consumed':
+                update_data['consumed_at'] = datetime.utcnow()
+            elif new_status == 'released':
+                update_data['released_at'] = datetime.utcnow()
+            
+            # Update reservation
+            success, error = await self.db.update_document(COLLECTIONS['inventory_reservations'], reservation_id, update_data)
+            
+            if success:
+                # If releasing reservation, update inventory reserved quantity
+                if new_status == 'released' and current_status == 'reserved':
+                    inventory_id = reservation_data.get('inventory_id')
+                    quantity = reservation_data.get('quantity', 0)
+                    
+                    if inventory_id and quantity > 0:
+                        try:
+                            # Get current inventory item
+                            item_success, item_data, _ = await self.get_inventory_item(inventory_id)
+                            if item_success and item_data:
+                                doc_id = item_data.get('_doc_id', inventory_id)
+                                current_reserved = item_data.get('reserved_quantity', 0)
+                                new_reserved = max(0, current_reserved - quantity)
+                                
+                                await self.update_inventory_item(doc_id, {
+                                    'reserved_quantity': new_reserved
+                                }, updated_by)
+                        except Exception as update_error:
+                            logger.warning(f"Failed to update reserved quantity for released reservation: {update_error}")
+                
+                logger.info(f"Reservation {reservation_id} status updated to {new_status}")
+                return True, None
+            else:
+                return False, f"Failed to update reservation: {error}"
+                
+        except Exception as e:
+            error_msg = f"Error updating reservation {reservation_id} status: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+
+    async def mark_reservation_consumed(self, reservation_id: str, consumed_by: str) -> Tuple[bool, Optional[str]]:
+        """Mark reservation as consumed (items used for completed task)"""
+        return await self.update_reservation_status(reservation_id, 'consumed', consumed_by)
+
+    async def release_reservation(self, reservation_id: str, released_by: str) -> Tuple[bool, Optional[str]]:
+        """Release reservation (cancel reservation)"""
+        return await self.update_reservation_status(reservation_id, 'released', released_by)
+
+    async def mark_reservation_received(self, reservation_id: str, received_by: str) -> Tuple[bool, Optional[str]]:
+        """Mark reservation as received (staff has picked up the items)"""
+        return await self.update_reservation_status(reservation_id, 'received', received_by)
+
+    async def request_replacement_for_defective_item(self, reservation_id: str, replacement_data: Dict[str, Any], requested_by: str) -> Tuple[bool, str, Optional[str]]:
+        """Request replacement for a defective reserved item"""
+        try:
+            # Get the original reservation
+            success, reservation_data, error = await self.db.get_document(COLLECTIONS['inventory_reservations'], reservation_id)
+            if not success:
+                return False, "", f"Reservation not found: {error}"
+
+            # Check if reservation is in received status (staff has picked it up)
+            if reservation_data.get('status') != 'received':
+                return False, "", "Can only request replacement for received items"
+
+            # Get inventory item details
+            inventory_id = reservation_data.get('inventory_id')
+            item_success, item_data, item_error = await self.get_inventory_item(inventory_id)
+            if not item_success:
+                return False, "", f"Inventory item not found: {item_error}"
+
+            # Create replacement request
+            quantity_needed = replacement_data.get('quantity_needed') or reservation_data.get('quantity', 1)
+            reason = replacement_data.get('reason', 'Item found defective during inspection')
+
+            request_data = {
+                'inventory_id': inventory_id,
+                'item_name': item_data.get('item_name', ''),
+                'item_code': item_data.get('item_code', ''),
+                'quantity_requested': quantity_needed,
+                'purpose': f"Replacement for defective item - {reason}",
+                'maintenance_task_id': reservation_data.get('maintenance_task_id'),
+                'reference_type': 'maintenance_task',
+                'reference_id': reservation_data.get('maintenance_task_id'),
+                'requested_by': requested_by,
+                'status': 'pending',
+                'defective_reservation_id': reservation_id,  # Link to original reservation
+                'replacement_reason': reason
+            }
+
+            # Create the request
+            success, request_id, error = await self.create_inventory_request(request_data)
+
+            if success:
+                # Update the original reservation with defective note
+                update_data = {
+                    'is_defective': True,
+                    'defective_reason': reason,
+                    'replacement_requested': True,
+                    'replacement_request_id': request_id,
+                    'updated_at': datetime.utcnow()
+                }
+
+                await self.db.update_document(COLLECTIONS['inventory_reservations'], reservation_id, update_data)
+
+                # Send notification
+                try:
+                    from ..services.notification_manager import notification_manager
+                    await notification_manager.notify_inventory_replacement_requested(
+                        request_id,
+                        item_data.get('item_name', 'Unknown Item'),
+                        quantity_needed,
+                        reason,
+                        reservation_data.get('maintenance_task_id')
+                    )
+                except Exception as notif_error:
+                    logger.warning(f"Failed to send replacement request notification: {notif_error}")
+
+                logger.info(f"Replacement request created for defective reservation {reservation_id}: {request_id}")
+                return True, request_id, None
+            else:
+                return False, "", f"Failed to create replacement request: {error}"
+
+        except Exception as e:
+            error_msg = f"Error requesting replacement for reservation {reservation_id}: {str(e)}"
+            logger.error(error_msg)
+            return False, "", error_msg
 
 # Create global service instance
 inventory_service = InventoryService()

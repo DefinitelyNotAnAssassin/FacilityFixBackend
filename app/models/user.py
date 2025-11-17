@@ -23,11 +23,11 @@ class UserStatus(str, Enum):
 
 
 class StaffDepartment(str, Enum):
-    MAINTENANCE = "maintenance"
     CARPENTRY   = "carpentry"
     PLUMBING    = "plumbing"
     ELECTRICAL  = "electrical"
     MASONRY     = "masonry"
+    HOUSEKEEPING = "house keeping"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
