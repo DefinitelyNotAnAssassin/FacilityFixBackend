@@ -275,7 +275,36 @@ class WorkOrderPermitService:
         if not success or not updated_permits_data or len(updated_permits_data) == 0:
             raise Exception("Failed to retrieve updated permit")
         
-        return WorkOrderPermit(**updated_permits_data[0])
+        permit = permits_data[0]
+        await self._enrich_permit_with_user_info(permit)
+        
+        return WorkOrderPermit(**permit)
+    
+    async def _enrich_permit_with_user_info(self, permit: dict) -> None:
+        """Helper method to enrich permit with user names"""
+        # Enrich requested_by with tenant name
+        if permit.get("requested_by"):
+            requested_by_id = permit.get("requested_by")
+            try:
+                user_profile = await self.user_service.get_user_profile(requested_by_id)
+                if user_profile:
+                    permit['requested_by_name'] = f"{user_profile.first_name} {user_profile.last_name}".strip()
+                else:
+                    permit['requested_by_name'] = requested_by_id
+            except Exception:
+                permit['requested_by_name'] = requested_by_id
+        
+        # Enrich approved_by with admin name
+        if permit.get("approved_by"):
+            approved_by_id = permit.get("approved_by")
+            try:
+                user_profile = await self.user_service.get_user_profile(approved_by_id)
+                if user_profile:
+                    permit['approved_by_name'] = f"{user_profile.first_name} {user_profile.last_name}".strip()
+                else:
+                    permit['approved_by_name'] = approved_by_id
+            except Exception:
+                permit['approved_by_name'] = approved_by_id
 
     async def get_work_order_permit(self, permit_id: str) -> Optional[WorkOrderPermit]:
         """Get work order permit by ID"""
