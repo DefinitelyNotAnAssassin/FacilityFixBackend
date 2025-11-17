@@ -3,6 +3,7 @@ from datetime import datetime
 from app.models.database_models import JobService, UserProfile, ConcernSlip, Notification
 from app.database.database_service import DatabaseService
 from app.services.user_id_service import UserIdService
+from app.services.job_service_id_service import job_service_id_service
 import uuid
 
 class JobServiceService:
@@ -26,7 +27,7 @@ class JobServiceService:
         if not creator_profile or creator_profile.role != "admin":
             raise ValueError("Only admins can create job services")
 
-        job_service_id = f"job_{str(uuid.uuid4())[:8]}"
+        job_service_id = await job_service_id_service.generate_job_service_id()
 
         job_service_data = {
             "id": job_service_id,
@@ -53,6 +54,7 @@ class JobServiceService:
         # Update concern slip status
         success, error = await self.db.update_document("concern_slips", concern_slip_id, {
             "resolution_type": "job_service",
+            "status": "completed",
             "updated_at": datetime.utcnow()
         })
 
@@ -278,6 +280,36 @@ class JobServiceService:
                 enriched_data["requested_by"] = created_by_uid
                 enriched_data["requested_by_name"] = "Unknown User"
 
+        if "formatted_id" not in enriched_data or enriched_data["formatted_id"] is None:
+            print(f"[JobServiceService] formatted_id is missing for job service {job_service_data.get('id')}, generating one")
+            # Generate formatted_id from created_at timestamp
+            created_at = enriched_data.get("created_at")
+            if created_at:
+                if isinstance(created_at, str):
+                    try:
+                        created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    except:
+                        created_at = datetime.utcnow()
+                elif not isinstance(created_at, datetime):
+                    created_at = datetime.utcnow()
+                
+                year = created_at.year
+                # Use a simple sequential number based on the ID
+                # Extract last 5 characters or use timestamp-based number
+                job_id = enriched_data.get("id", "")
+                if len(job_id) >= 5:
+                    # Try to create a number from the last characters
+                    try:
+                        # Use hash of the ID to create a consistent number
+                        id_hash = abs(hash(job_id)) % 100000
+                        enriched_data["formatted_id"] = f"JS-{year}-{str(id_hash).zfill(5)}"
+                    except:
+                        enriched_data["formatted_id"] = f"JS-{year}-00000"
+                else:
+                    enriched_data["formatted_id"] = f"JS-{year}-00000"
+                
+                print(f"[JobServiceService] Generated formatted_id: {enriched_data['formatted_id']}")
+
         return enriched_data
 
     async def get_job_service(self, job_service_id: str) -> Optional[JobService]:
@@ -288,7 +320,9 @@ class JobServiceService:
         success, jobs_data, error = await self.db.query_documents("job_services", [("id", job_service_id)])
         if success and jobs_data and len(jobs_data) > 0:
             print(f"[JobServiceService] Found job service in job_services collection")
+            print(f"[JobServiceService] Raw formatted_id from DB: {jobs_data[0].get('formatted_id')}")
             enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            print(f"[JobServiceService] Enriched formatted_id: {enriched_data.get('formatted_id')}")
             if enriched_data.get("completion_notes"):
                 enriched_data["assessment"] = enriched_data["completion_notes"]
             if enriched_data.get("assessed_by"):
@@ -305,7 +339,9 @@ class JobServiceService:
         success, jobs_data, error = await self.db.query_documents("job_service_requests", [("id", job_service_id)])
         if success and jobs_data and len(jobs_data) > 0:
             print(f"[JobServiceService] Found job service in job_service_requests collection")
+            print(f"[JobServiceService] Raw formatted_id from DB: {jobs_data[0].get('formatted_id')}")
             enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            print(f"[JobServiceService] Enriched formatted_id: {enriched_data.get('formatted_id')}")
             if enriched_data.get("completion_notes"):
                 enriched_data["assessment"] = enriched_data["completion_notes"]
             if enriched_data.get("assessed_by"):
@@ -474,7 +510,7 @@ class JobServiceService:
             if user_role != "tenant":
                 raise ValueError("Only tenants can create tenant job services")
 
-        job_service_id = str(uuid.uuid4())
+        job_service_id = await job_service_id_service.generate_job_service_id()
         
         job_service_data = {
             "id": job_service_id,

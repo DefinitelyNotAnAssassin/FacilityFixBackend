@@ -12,8 +12,8 @@ class WorkOrderPermitIdService:
     @staticmethod
     async def generate_work_order_permit_id() -> str:
         """
-        Generate next available work order permit ID in format: WOP-YYYY-NNNNN
-        Example: WOP-2025-00001, WOP-2025-00002, etc.
+        Generate next available work order permit ID in format: WP-YYYY-NNNNN
+        Example: WP-2025-00001, WP-2025-00002, etc.
 
         Uses a counters collection to store per-year counters. This implementation
         reads the counter doc for the current year and increments it. It keeps
@@ -68,8 +68,7 @@ class WorkOrderPermitIdService:
                 logger.error(f"Failed to increment work order permit counter: {update_error}")
                 raise Exception(f"Failed to increment work order permit counter: {update_error}")
 
-        # Generate formatted ID: WOP-YYYY-NNNNN (5 digits with leading zeros)
-        formatted_id = f"WOP-{current_year}-{next_number:05d}"
+        formatted_id = f"WP-{current_year}-{next_number:05d}"
         logger.info(f"Generated unique work order permit ID: {formatted_id}")
 
         return formatted_id
