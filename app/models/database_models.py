@@ -91,9 +91,11 @@ class InventoryRequest(BaseModel):
     purpose: str  # job_service, maintenance, emergency, etc.
     reference_id: Optional[str] = None  # job_service_id or maintenance_task_id
     priority: str = Field(default="normal")  # low, normal, high, urgent
-    status: str = Field(default="pending")  # pending, approved, denied, recieved
+    status: str = Field(default="pending")  # pending, approved, denied, received
     justification: Optional[str] = None
     admin_notes: Optional[str] = None
+    date_needed: Optional[datetime] = None  # When the item is needed by
+    notes: Optional[str] = None  # Additional notes from requester
     requested_date: Optional[datetime] = None
     approved_date: Optional[datetime] = None
     fulfilled_date: Optional[datetime] = None

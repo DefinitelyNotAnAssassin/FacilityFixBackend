@@ -336,11 +336,13 @@ async def get_inventory_reservations(
             if not task:
                 raise HTTPException(status_code=404, detail="Maintenance task not found")
             
-            # Check if user is assigned to this task
+            # Check if user is assigned to this task (same logic as maintenance router)
             is_assigned = False
             
-            # Check whole task assignment - use staff_id
-            if task.assigned_to == user_profile.staff_id:
+            # Check whole task assignment (multiple ways it could be assigned)
+            if (task.assigned_to == f"{user_profile.first_name} {user_profile.last_name}" or
+                task.assigned_to == user_id or
+                getattr(task, 'assigned_staff_name', None) == f"{user_profile.first_name} {user_profile.last_name}"):
                 is_assigned = True
             
             # Check checklist item assignments
@@ -941,6 +943,40 @@ async def update_inventory_request(
         logger.error(f"Error updating inventory request {request_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@router.post("/requests/{request_id}/receive", response_model=Dict[str, Any])
+async def receive_inventory_request(
+    request_id: str,
+    deduct_stock: bool = Query(False, description="Whether to deduct stock immediately"),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(require_role(["admin", "staff"]))
+):
+    """Mark an inventory request as received (Staff and Admin only)"""
+    try:
+        update_data = {
+            "status": "received",
+            "deduct_stock": deduct_stock
+        }
+        
+        success, error = await inventory_service.update_inventory_request(
+            request_id=request_id,
+            update_data=update_data,
+            updated_by=current_user["uid"]
+        )
+        
+        if success:
+            return {
+                "success": True,
+                "message": "Inventory request marked as received successfully"
+            }
+        else:
+            raise HTTPException(status_code=400, detail=error)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error receiving inventory request {request_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 # ═══════════════════════════════════════════════════════════════════════════
 # LOW STOCK ALERTS ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1115,7 +1151,7 @@ async def get_requests_by_maintenance_task(
             if not user_id:
                 raise HTTPException(status_code=401, detail="User ID not found")
 
-            # Get user profile to get full name
+            # Get user profile to get full name and staff_id
             user_profile = await user_id_service.get_user_profile(user_id)
 
             # Get the specific task
@@ -1123,11 +1159,13 @@ async def get_requests_by_maintenance_task(
             if not task:
                 raise HTTPException(status_code=404, detail="Maintenance task not found")
 
-            # Check if user is assigned to this task
+            # Check if user is assigned to this task (same logic as maintenance router)
             is_assigned = False
 
-            # Check whole task assignment
-            if task.assigned_to == f"{user_profile.first_name} {user_profile.last_name}" or task.assigned_to == user_id:
+            # Check whole task assignment (multiple ways it could be assigned)
+            if (task.assigned_to == f"{user_profile.first_name} {user_profile.last_name}" or
+                task.assigned_to == user_id or
+                getattr(task, 'assigned_staff_name', None) == f"{user_profile.first_name} {user_profile.last_name}"):
                 is_assigned = True
 
             # Check checklist item assignments

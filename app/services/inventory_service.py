@@ -1051,6 +1051,12 @@ class InventoryService:
             update_data["updated_at"] = datetime.now()
             update_data["updated_by"] = updated_by
             
+            # Set timestamps based on status changes
+            if new_status == "received":
+                update_data["fulfilled_date"] = datetime.now()
+            elif new_status == "approved":
+                update_data["approved_date"] = datetime.now()
+            
             # If status is 'received' and deduct_stock is True, deduct from inventory
             if new_status == "received" and deduct_stock:
                 inventory_id = request_data.get("inventory_id")
