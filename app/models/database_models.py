@@ -219,6 +219,7 @@ class JobService(BaseModel):
     requested_by: Optional[str] = None  # User ID (T-0001, S-0002, etc.)
     requested_by_name: Optional[str] = None  # Full name of requester
     requested_by_email: Optional[str] = None  # Email of requester
+
 class WorkOrderPermit(BaseModel):
     id: Optional[str] = None
     
@@ -315,8 +316,7 @@ class MaintenanceTask(BaseModel):
     feedback_notes: Optional[str] = None
     
     # Additional fields for external maintenance
-    contractor_name: Optional[str] = None
-    contact_person: Optional[str] = None
+    contact_name: Optional[str] = None
     contact_number: Optional[str] = None
     email: Optional[str] = None
     service_category: Optional[str] = None
@@ -326,6 +326,13 @@ class MaintenanceTask(BaseModel):
     assigned_staff_name: Optional[str] = None
     formatted_id: Optional[str] = None
     task_code: Optional[str] = None
+    
+    # Assessment and tracking fields
+    assessment_received: Optional[str] = None  # yes, no, pending
+    assessment_date: Optional[datetime] = None
+    logged_by: Optional[str] = None
+    assessment: Optional[str] = None
+    recommendation: Optional[str] = None
     
     # Metadata
     created_by: Optional[str] = None

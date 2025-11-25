@@ -1049,7 +1049,7 @@ class InventoryService:
             
             # Update status
             update_data["updated_at"] = datetime.now()
-            update_data["updated_by"] = updated_by
+            update_data["updated_by"] = updated_by 
             
             # Set timestamps based on status changes
             if new_status == "received":
@@ -1495,8 +1495,9 @@ class InventoryService:
             success, error = await self.db.update_document(COLLECTIONS['inventory_reservations'], reservation_id, update_data)
             
             if success:
-                # If releasing reservation, update inventory reserved quantity
+                # Handle status-specific logic
                 if new_status == 'released' and current_status == 'reserved':
+                    # When releasing a reservation, restore the reserved quantity
                     inventory_id = reservation_data.get('inventory_id')
                     quantity = reservation_data.get('quantity', 0)
                     
@@ -1514,6 +1515,33 @@ class InventoryService:
                                 }, updated_by)
                         except Exception as update_error:
                             logger.warning(f"Failed to update reserved quantity for released reservation: {update_error}")
+                
+                elif new_status == 'received' and current_status == 'reserved':
+                    # When marking as received, deduct from actual stock and log transaction
+                    inventory_id = reservation_data.get('inventory_id')
+                    quantity = reservation_data.get('quantity', 0)
+                    maintenance_task_id = reservation_data.get('maintenance_task_id')
+                    
+                    if inventory_id and quantity > 0:
+                        try:
+                            # Deduct from current stock and log transaction
+                            stock_success, stock_error = await self.update_stock(
+                                item_id=inventory_id,
+                                quantity_change=-quantity,  # Negative for deduction
+                                transaction_type='out',
+                                performed_by=updated_by,
+                                reference_type='maintenance_task',
+                                reference_id=maintenance_task_id,
+                                reason=f'Items issued for maintenance task {maintenance_task_id}'
+                            )
+                            
+                            if not stock_success:
+                                logger.error(f"Failed to deduct stock for received reservation {reservation_id}: {stock_error}")
+                                # Note: We don't fail the reservation update if stock deduction fails
+                                # This prevents blocking the workflow due to stock issues
+                            
+                        except Exception as deduction_error:
+                            logger.error(f"Error deducting stock for received reservation {reservation_id}: {deduction_error}")
                 
                 logger.info(f"Reservation {reservation_id} status updated to {new_status}")
                 return True, None

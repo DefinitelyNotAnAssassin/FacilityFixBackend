@@ -28,6 +28,7 @@ COLLECTIONS = {
     'counters': 'counters',
     'chat_rooms': 'chat_rooms',
     'chat_messages': 'chat_messages',
+    'password_reset_otps': 'password_reset_otps',
 }
 
 # Collection Structure Documentation
@@ -171,5 +172,10 @@ COLLECTION_SCHEMAS = {
         'fields': ['room_id', 'sender_id', 'sender_name', 'sender_role', 'message_text', 'message_type', 'attachments', 'is_read', 'read_by', 'is_deleted'],
         'required': ['room_id', 'sender_id', 'sender_name', 'sender_role', 'message_text'],
         'indexes': ['room_id', 'sender_id', 'created_at', 'is_read']
+    },
+    'password_reset_otps': {
+        'fields': ['email', 'otp', 'uid', 'expires_at', 'used', 'used_at', 'created_at'],
+        'required': ['email', 'otp', 'uid', 'expires_at'],
+        'indexes': ['email', 'otp', 'expires_at', 'used']
     },
 }

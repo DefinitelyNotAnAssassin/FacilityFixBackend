@@ -132,9 +132,9 @@ class MaintenanceTaskCreate(BaseModel):
     feedback_notes: Optional[str] = None
     status: Optional[str] = None
     
-    # External maintenance contractor fields
-    contractor_name: Optional[str] = None
-    contact_email: Optional[str] = None
+    # External maintenance contractor fields (canonical names)
+    contact_name: Optional[str] = None
+    email: Optional[str] = None
     contact_number: Optional[str] = None
     service_category: Optional[str] = None
     department: Optional[str] = None
@@ -146,6 +146,7 @@ class MaintenanceTaskCreate(BaseModel):
     
     # Assessment and tracking fields
     assessment_received: Optional[str] = None
+    assessment_date: Optional[datetime] = None
     logged_by: Optional[str] = None
     logged_date: Optional[str] = None
     assessment: Optional[str] = None
@@ -192,15 +193,16 @@ class MaintenanceTaskUpdate(BaseModel):
     completion_notes: Optional[str] = None
     actual_duration: Optional[int] = Field(default=None, ge=0)
     
-    # External maintenance contractor fields
-    contractor_name: Optional[str] = None
-    contact_email: Optional[str] = None
+    # External maintenance contractor fields (canonical names)
+    contact_name: Optional[str] = None
+    email: Optional[str] = None
     contact_number: Optional[str] = None
     service_category: Optional[str] = None
     department: Optional[str] = None
     
     # Assessment and tracking fields
     assessment_received: Optional[str] = None
+    assessment_date: Optional[datetime] = None
     logged_by: Optional[str] = None
     logged_date: Optional[str] = None
     assessment: Optional[str] = None
@@ -248,6 +250,7 @@ async def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
         "started_at",
         "completed_at",
         "next_occurrence",
+        "assessment_date",
         "created_at",
         "updated_at",
     ):

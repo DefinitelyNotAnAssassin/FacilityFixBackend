@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
+import random
 
 import httpx
 from fastapi import APIRouter, HTTPException, status, Depends
@@ -32,6 +33,7 @@ from ..database.collections import COLLECTIONS
 # Services & settings
 from ..services.user_id_service import user_id_service
 from ..core.config import settings
+from ..services.email_service import email_service
 
 logger = logging.getLogger("facilityfix.routers.auth")
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -44,6 +46,16 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 class EmailPasswordLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str
+    new_password: str
 
 
 class AdminRegister(BaseModel):
@@ -350,6 +362,123 @@ async def logout_user(current_user: Dict[str, Any] = Depends(get_current_user)) 
     except Exception as e:
         logger.exception("Logout failed for uid=%s", current_user.get("uid"))
         raise HTTPException(status_code=400, detail=f"Logout failed: {str(e)}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Forgot Password (email OTP)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/forgot-password", response_model=dict)
+async def forgot_password(body: ForgotPasswordRequest) -> Dict[str, Any]:
+    """
+    Send OTP to email for password reset.
+    Generates 6-digit OTP, stores it in DB with expiry, sends via email.
+    """
+    try:
+        logger.info("Forgot password request for email: %s", body.email)
+
+        # Check if user exists in Firebase Auth
+        try:
+            user = await firebase_auth.get_user_by_email(body.email)
+            uid = user["uid"]
+        except Exception:
+            # Don't reveal if email exists or not for security
+            return {"message": "If the email exists, an OTP has been sent."}
+
+        # Generate 6-digit OTP
+        otp = f"{random.randint(100000, 999999)}"
+
+        # Store OTP in DB with expiry (10 minutes)
+        otp_data = {
+            "email": body.email,
+            "otp": otp,
+            "uid": uid,
+            "expires_at": datetime.utcnow() + timedelta(minutes=10),
+            "used": False,
+            "created_at": datetime.utcnow()
+        }
+
+        success, _, error = await database_service.create_document(
+            COLLECTIONS["password_reset_otps"], otp_data, validate=False
+        )
+        if not success:
+            logger.error("Failed to store OTP: %s", error)
+            raise HTTPException(status_code=500, detail="Failed to process request")
+
+        # Send OTP via email
+        subject = "FacilityFix Password Reset OTP"
+        html_content = f"""
+        <html>
+        <body>
+            <h2>Password Reset</h2>
+            <p>Your OTP for password reset is: <strong>{otp}</strong></p>
+            <p>This OTP expires in 10 minutes.</p>
+            <p>If you didn't request this, please ignore this email.</p>
+        </body>
+        </html>
+        """
+
+        email_sent = await email_service.send_email(
+            to_email=body.email,
+            to_name="User",
+            subject=subject,
+            html_content=html_content
+        )
+
+        if not email_sent:
+            logger.warning("Failed to send OTP email to %s", body.email)
+
+        return {"message": "If the email exists, an OTP has been sent."}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Forgot password failed for email: %s", body.email)
+        raise HTTPException(status_code=500, detail="Failed to process request")
+
+
+@router.post("/reset-password", response_model=dict)
+async def reset_password(body: ResetPasswordRequest) -> Dict[str, Any]:
+    """
+    Verify OTP and reset password.
+    """
+    try:
+        logger.info("Reset password request for email: %s", body.email)
+
+        # Find valid OTP
+        success, otps, error = await database_service.query_documents(
+            COLLECTIONS["password_reset_otps"],
+            [
+                ("email", "==", body.email),
+                ("otp", "==", body.otp),
+                ("used", "==", False),
+                ("expires_at", ">", datetime.utcnow())
+            ]
+        )
+
+        if not success or not otps:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+
+        otp_doc = otps[0]  # Take the first valid one
+
+        # Mark OTP as used
+        await database_service.update_document(
+            COLLECTIONS["password_reset_otps"],
+            otp_doc["_doc_id"],
+            {"used": True, "used_at": datetime.utcnow()},
+            validate=False
+        )
+
+        # Update password in Firebase
+        await firebase_auth.update_user(otp_doc["uid"], password=body.new_password)
+
+        return {"message": "Password reset successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Reset password failed for email: %s", body.email)
+        raise HTTPException(status_code=500, detail="Failed to reset password")
 
 
 @router.post("/logout-all-devices", response_model=dict)
