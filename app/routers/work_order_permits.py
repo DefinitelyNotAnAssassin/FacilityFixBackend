@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
+from fastapi import APIRouter, HTTPException, Depends, File, UploadFile, status
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -78,7 +78,7 @@ async def _create_work_order_permit_logic(
         "description": request.request_type_detail,
         "location": request.location,
         "category": "",
-        "priority": "",
+        "priority": "low",  # Default priority for escalation - can be updated by admin
         "status": "pending",
         "request_type": "Work Order Permit",
         "unit_id": request.unit_id,
@@ -112,6 +112,18 @@ async def _create_work_order_permit_logic(
             print(f"[Work Order Permit] Updated concern slip {concern_slip_id} status to completed")
         else:
             print(f"[Work Order Permit] Warning: Failed to update concern slip status: {update_error}")
+    
+    # Send notifications to admin and tenant
+    from app.services.notification_manager import notification_manager
+    try:
+        await notification_manager.notify_permit_created(
+            permit_id=work_order_id,
+            requester_id=current_user["uid"],
+            contractor_name=request.contractors[0].get("name", "Contractor") if request.contractors else "Contractor",
+            work_description=request.request_type_detail
+        )
+    except Exception as e:
+        print(f"[Work Order Permit] Warning: Failed to send notifications: {str(e)}")
     
     return {
         "success": True,
@@ -440,6 +452,13 @@ async def complete_work_order_request(
             print(f"[Work Order Complete] Using Firebase doc ID: {firebase_doc_id}")
             print(f"[Work Order Complete] Available fields: {list(permit_data.keys())}")
             
+            print(f"[Work Order Complete] Permit data BEFORE update:")
+            print(f"  - formatted_id: {permit_data.get('formatted_id')}")
+            print(f"  - id: {permit_data.get('id')}")
+            print(f"  - status BEFORE: {permit_data.get('status')}")
+            print(f"  - concern_slip_id: {permit_data.get('concern_slip_id')}")
+            print(f"  - _doc_id: {permit_data.get('_doc_id')}")
+            
             update_data = {
                 "status": "completed",
                 "completed_at": datetime.utcnow(),
@@ -451,7 +470,8 @@ async def complete_work_order_request(
             if request and request.completion_notes:
                 update_data["completion_notes"] = request.completion_notes
             
-            print(f"[Work Order Complete] Updating document {firebase_doc_id} with data: {update_data}")
+            print(f"[Work Order Complete] Updating document {firebase_doc_id} with status: completed")
+            print(f"[Work Order Complete] Full update data: {update_data}")
             
             success, error = await db.update_document("work_order_permits", firebase_doc_id, update_data)
             
@@ -460,6 +480,33 @@ async def complete_work_order_request(
                 raise HTTPException(status_code=500, detail=f"Failed to update document: {error}")
             
             print(f"[Work Order Complete] Successfully marked work order {work_order_id} as completed")
+            
+            # Fetch updated permit to verify status was set to 'completed'
+            import time; time.sleep(1)  # Wait for Firestore to update
+            success, updated_permits, error = await db.query_documents(
+                "work_order_permits",
+                [("formatted_id", "==", work_order_id)] if work_order_id.startswith("WP-") else [("id", "==", work_order_id)]
+            )
+            if success and updated_permits:
+                updated_permit = updated_permits[0]
+                actual_status = updated_permit.get('status')
+                print(f"[Work Order Complete] ⭐ VERIFICATION: Updated permit status in database: {actual_status}")
+                print(f"[Work Order Complete] ⭐ VERIFICATION: Expected 'completed', got '{actual_status}'")
+                if actual_status != 'completed':
+                    print(f"[Work Order Complete] ⚠️  ERROR: Status mismatch! Expected 'completed' but database has '{actual_status}'")
+                print(f"[Work Order Complete] Full updated permit: {updated_permit}")
+            else:
+                print(f"[Work Order Complete] Could not verify permit after update: {error}")
+            
+            # Send notification to admins about completion
+            from app.services.notification_manager import notification_manager
+            contractor_name = permit_data.get("contractor_name") or permit_data.get("title") or permit_data.get("description") or "Work Order"
+            completion_notes = request.completion_notes if request else None
+            await notification_manager.notify_permit_completed(
+                permit_id=work_order_id,
+                contractor_name=contractor_name,
+                completion_notes=completion_notes
+            )
             
             return {
                 "success": True,
@@ -495,17 +542,32 @@ async def get_next_work_order_id(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate next ID: {str(e)}")
 
-@router.get("/", response_model=List[WorkOrderPermit])
+@router.get("/", response_model=List[dict])
 async def get_all_permits(
-    current_user: dict = Depends(get_current_user),
-    _: None = Depends(require_role(["admin"]))
+    current_user: dict = Depends(get_current_user)
 ):
     """Get all work order permits (Admin only)"""
     try:
+        user_role = current_user.get("role")
+        
+        # Check if user is admin
+        if user_role != "admin":
+            print(f"[Work Order Permits] Access denied: user role '{user_role}' is not admin")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Admin access required. Current role: {user_role}"
+            )
+        
         service = WorkOrderPermitService()
         permits = await service.get_all_permits()
-        return permits
+        # Return as list of dicts instead of typed WorkOrderPermit to avoid serialization issues
+        return permits if permits else []
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"[Work Order Permits] Error fetching all permits: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to get permits: {str(e)}")
 
 # File attachment endpoints for work order permits

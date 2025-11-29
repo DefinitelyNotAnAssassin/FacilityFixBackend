@@ -182,6 +182,7 @@ class JobService(BaseModel):
     priority: str
     status: str = Field(default="pending")  # pending, assigned, in_progress, completed, closed
     scheduled_date: Optional[datetime] = None
+    schedule_availability: Optional[str] = None  # Tenant's preferred schedule (e.g., "Dec 8, 2-4 PM")
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     estimated_hours: Optional[float] = None

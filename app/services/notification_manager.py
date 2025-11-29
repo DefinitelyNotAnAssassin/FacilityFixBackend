@@ -19,12 +19,13 @@ The manager provides:
 
 import uuid
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Union, Tuple
 from enum import Enum
 
 from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
+from ..core.config import settings
 from ..models.notification_models import (
     EnhancedNotification, NotificationType, NotificationPriority, 
     NotificationChannel, DeliveryStatus, NotificationTemplate,
@@ -32,6 +33,23 @@ from ..models.notification_models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _convert_to_local_time(dt: datetime) -> datetime:
+    """Convert UTC datetime to local timezone based on TZ_OFFSET setting"""
+    if not dt:
+        return dt
+    
+    # If the datetime is naive, assume it's UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    
+    # Convert to local timezone by adding the offset
+    local_tz = timezone(timedelta(hours=settings.TZ_OFFSET))
+    local_dt = dt.astimezone(local_tz)
+    
+    # Return as naive datetime (remove timezone info) so frontend treats it as local time
+    return local_dt.replace(tzinfo=None)
 
 
 class NotificationManager:
@@ -75,10 +93,14 @@ class NotificationManager:
         """
         try:
             notification_id = str(uuid.uuid4())
+            print(f"[CREATE_NOTIF] Creating notification {notification_id}")
+            print(f"[CREATE_NOTIF] Type: {notification_type}, Recipient: {recipient_id}, Title: {title}")
             
             # Apply user preferences if no channels specified
             if channels is None:
                 channels = await self._get_user_preferred_channels(recipient_id, notification_type)
+            
+            print(f"[CREATE_NOTIF] Channels: {channels}")
             
             # Create notification object
             notification = EnhancedNotification(
@@ -102,12 +124,17 @@ class NotificationManager:
                 created_at=datetime.utcnow()
             )
             
+            print(f"[CREATE_NOTIF] Notification object created")
+            
             # Store notification
+            print(f"[CREATE_NOTIF] Storing to database...")
             success, _, error = await self.db.create_document(
                 COLLECTIONS['notifications'],
                 notification.dict(exclude_none=True),
                 notification_id
             )
+            
+            print(f"[CREATE_NOTIF] Database store result: success={success}, error={error}")
             
             if not success:
                 logger.error(f"Failed to create notification: {error}")
@@ -117,11 +144,15 @@ class NotificationManager:
             if send_immediately:
                 await self._deliver_notification(notification)
             
+            print(f"[CREATE_NOTIF] Notification {notification_id} created successfully")
             logger.info(f"Created notification {notification_id} for user {recipient_id}")
             return True, notification_id, None
             
         except Exception as e:
-            logger.error(f"Error creating notification: {str(e)}")
+            print(f"[CREATE_NOTIF] EXCEPTION: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            logger.error(f"Error creating notification: {str(e)}", exc_info=True)
             return False, None, str(e)
     
     async def create_bulk_notifications(
@@ -403,35 +434,150 @@ class NotificationManager:
         except Exception as e:
             logger.error(f"Error sending job service received notifications: {str(e)}")
             return False
+
+    async def notify_job_service_submitted_by_tenant(
+        self,
+        job_service_id: str,
+        title: str,
+        tenant_id: str,
+        category: str,
+        priority: str,
+        location: str
+    ) -> bool:
+        """Notify tenant when they submit a job service, and notify admins about the submission"""
+        try:
+            # Notify tenant confirming submission
+            await self.create_notification(
+                notification_type=NotificationType.JOB_SERVICE_RECEIVED,
+                recipient_id=tenant_id,
+                title="Job Service Submitted",
+                message=f"Your job service request '{title}' has been submitted successfully and is pending admin review. Category: {category}, Priority: {priority}, Location: {location}",
+                related_entity_type="job_service",
+                related_entity_id=job_service_id,
+                priority=NotificationPriority.NORMAL,
+                action_url=f"/job-services/{job_service_id}",
+                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                expires_at=datetime.utcnow() + timedelta(days=7)
+            )
+            
+            # Notify admins about new job service submission
+            admin_ids = await self._get_admin_user_ids()
+            for admin_id in admin_ids:
+                await self.create_notification(
+                    notification_type=NotificationType.JOB_SERVICE_RECEIVED,
+                    recipient_id=admin_id,
+                    title="New Job Service Request",
+                    message=f"New job service request submitted: '{title}'. Category: {category}, Priority: {priority}, Location: {location}",
+                    related_entity_type="job_service",
+                    related_entity_id=job_service_id,
+                    priority=NotificationPriority.HIGH if priority == "critical" else NotificationPriority.NORMAL,
+                    action_url=f"/job-services/{job_service_id}",
+                    channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                    expires_at=datetime.utcnow() + timedelta(days=7)
+                )
+            
+            logger.info(f"Sent job service submission notifications for {job_service_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending job service submission notifications: {str(e)}")
+            return False
+
+    async def notify_job_service_assigned_to_staff(
+        self,
+        job_service_id: str,
+        title: str,
+        staff_id: str,
+        assigned_by: str,
+        category: str,
+        priority: str,
+        location: str
+    ) -> bool:
+        """Notify staff member when assigned to a job service"""
+        try:
+            await self.create_notification(
+                notification_type=NotificationType.JOB_SERVICE_RECEIVED,
+                recipient_id=staff_id,
+                title="Job Service Assignment",
+                message=f"You have been assigned to complete job service '{title}'. Category: {category}, Priority: {priority}, Location: {location}",
+                related_entity_type="job_service",
+                related_entity_id=job_service_id,
+                priority=NotificationPriority.HIGH if priority == "critical" else NotificationPriority.NORMAL,
+                action_url=f"/job-services/{job_service_id}",
+                custom_data={
+                    "job_service_id": job_service_id,
+                    "assigned_by": assigned_by,
+                    "category": category,
+                    "priority": priority,
+                    "location": location,
+                    "title": title,
+                    "action_required": True
+                },
+                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                expires_at=datetime.utcnow() + timedelta(days=3)
+            )
+            
+            logger.info(f"Sent job service assignment notification to staff {staff_id} for {job_service_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending job service assignment notification to staff: {str(e)}")
+            return False
+
+    async def notify_job_service_assigned_to_tenant(
+        self,
+        job_service_id: str,
+        title: str,
+        tenant_id: str,
+        category: str,
+        priority: str,
+        location: str
+    ) -> bool:
+        """Notify tenant when their job service is assigned to staff"""
+        try:
+            await self.create_notification(
+                notification_type=NotificationType.JOB_SERVICE_RECEIVED,
+                recipient_id=tenant_id,
+                title="Job Service Assigned",
+                message=f"Your job service request '{title}' has been assigned to our staff for completion. Category: {category}, Priority: {priority}, Location: {location}",
+                related_entity_type="job_service",
+                related_entity_id=job_service_id,
+                priority=NotificationPriority.HIGH if priority == "critical" else NotificationPriority.NORMAL,
+                action_url=f"/job-services/{job_service_id}",
+                custom_data={
+                    "job_service_id": job_service_id,
+                    "category": category,
+                    "priority": priority,
+                    "location": location,
+                    "title": title,
+                    "status_update": "assigned"
+                },
+                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                expires_at=datetime.utcnow() + timedelta(days=7)
+            )
+            
+            logger.info(f"Sent job service assignment notification to tenant {tenant_id} for {job_service_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending job service assignment notification to tenant: {str(e)}")
+            return False
     
     async def notify_job_service_completed(
         self,
         job_service_id: str,
         staff_id: str,
         tenant_id: str,
+        admin_id: str,
         title: str,
         completion_notes: Optional[str] = None
     ) -> bool:
-        """Notify when job service work is completed"""
+        """Notify when job service work is completed - notifies tenant and admin"""
         try:
             notes_text = f" Notes: {completion_notes}" if completion_notes else ""
             
-            # Notify staff (confirmation)
-            await self.create_notification(
-                notification_type=NotificationType.JOB_SERVICE_COMPLETED,
-                recipient_id=staff_id,
-                title="Job Service Completed",
-                message=f"You have successfully completed the job service: {title}.{notes_text}",
-                sender_id=staff_id,
-                related_entity_type="job_service",
-                related_entity_id=job_service_id,
-                channels=[NotificationChannel.IN_APP],
-                action_url=f"/job-services/{job_service_id}",
-                action_label="View Completed Task"
-            )
-            
             # Notify tenant
-            await self.create_notification(
+            success, _, _ = await self.create_notification(
                 notification_type=NotificationType.JOB_SERVICE_COMPLETED,
                 recipient_id=tenant_id,
                 title="Job Service Completed",
@@ -443,6 +589,21 @@ class NotificationManager:
                 channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
                 action_url=f"/job-services/{job_service_id}",
                 action_label="View Results"
+            )
+            
+            # Notify admin
+            success, _, _ = await self.create_notification(
+                notification_type=NotificationType.JOB_SERVICE_COMPLETED,
+                recipient_id=admin_id,
+                title="Job Service Completed",
+                message=f"The job service '{title}' has been completed by assigned staff.{notes_text}",
+                sender_id=staff_id,
+                related_entity_type="job_service",
+                related_entity_id=job_service_id,
+                priority=NotificationPriority.NORMAL,
+                channels=[NotificationChannel.IN_APP],
+                action_url=f"/job-services/{job_service_id}",
+                action_label="View Details"
             )
             
             return True
@@ -476,10 +637,24 @@ class NotificationManager:
                     related_entity_id=permit_id,
                     priority=NotificationPriority.HIGH,
                     channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
-                    action_url=f"/admin/permits/{permit_id}",
+                    action_url=f"/#/adminweb/pages/adminrepair_wop_page",
                     action_label="Review Permit",
                     requires_action=True
                 )
+            
+            # Notify the requester (tenant) that they created the permit
+            await self.create_notification(
+                notification_type=NotificationType.PERMIT_CREATED,
+                recipient_id=requester_id,
+                title="Work Order Permit Submitted",
+                message=f"Your work order permit request for {contractor_name} has been submitted and is awaiting admin approval.",
+                related_entity_type="work_order_permit",
+                related_entity_id=permit_id,
+                priority=NotificationPriority.NORMAL,
+                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
+                action_url=f"/permits/{permit_id}",
+                action_label="View Permit"
+            )
             
             return True
             
@@ -630,6 +805,39 @@ class NotificationManager:
             logger.error(f"Error sending permit expiring notifications: {str(e)}")
             return False
     
+    async def notify_permit_completed(
+        self,
+        permit_id: str,
+        contractor_name: str,
+        completion_notes: Optional[str] = None
+    ) -> bool:
+        """Notify admins when tenant marks work order permit as completed"""
+        try:
+            # Get all admin users
+            admin_users = await self._get_users_by_role("admin")
+            
+            notes_text = f" Notes: {completion_notes}" if completion_notes else ""
+            
+            for admin in admin_users:
+                await self.create_notification(
+                    notification_type=NotificationType.MAINTENANCE_COMPLETED,
+                    recipient_id=admin["id"],
+                    title="Work Order Permit Completed",
+                    message=f"Work order permit for {contractor_name} has been marked as completed by the tenant.{notes_text}",
+                    related_entity_type="work_order_permit",
+                    related_entity_id=permit_id,
+                    priority=NotificationPriority.NORMAL,
+                    channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                    action_url="/#/adminweb/pages/adminrepair_wop_page",
+                    action_label="View Work Orders"
+                )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending permit completion notifications: {str(e)}")
+            return False
+    
     # ═══════════════════════════════════════════════════════════════════════════
     # MAINTENANCE TASK NOTIFICATIONS
     # ═══════════════════════════════════════════════════════════════════════════
@@ -645,9 +853,42 @@ class NotificationManager:
     ) -> bool:
         """Notify when maintenance task is assigned to staff"""
         try:
-            schedule_text = f" scheduled for {scheduled_date.strftime('%Y-%m-%d %H:%M')}" if scheduled_date else ""
+            print(f"\n[NOTIF_MGR] notify_maintenance_task_assigned called")
+            print(f"[NOTIF_MGR] task_id={task_id}, staff_id={staff_id}")
+            print(f"[NOTIF_MGR] scheduled_date={scheduled_date} (type={type(scheduled_date).__name__})")
             
-            await self.create_notification(
+            # Handle scheduled_date - could be datetime, string, or Firestore Timestamp
+            schedule_text = ""
+            if scheduled_date:
+                try:
+                    # If it's a Firestore Timestamp object, convert to datetime
+                    if hasattr(scheduled_date, 'strftime'):
+                        local_scheduled = _convert_to_local_time(scheduled_date)
+                        schedule_text = f" scheduled for {local_scheduled.strftime('%Y-%m-%d')}"
+                        print(f"[NOTIF_MGR] Used strftime method (converted to local): {schedule_text}")
+                    elif isinstance(scheduled_date, str):
+                        # Parse ISO format string
+                        try:
+                            dt = datetime.fromisoformat(scheduled_date.replace('Z', '+00:00'))
+                            local_dt = _convert_to_local_time(dt)
+                            schedule_text = f" scheduled for {local_dt.strftime('%Y-%m-%d')}"
+                            print(f"[NOTIF_MGR] Parsed ISO string (converted to local): {schedule_text}")
+                        except:
+                            schedule_text = f" scheduled for {scheduled_date[:10]}"
+                            print(f"[NOTIF_MGR] Used string substring: {schedule_text}")
+                    else:
+                        # Try to convert to string
+                        schedule_text = f" scheduled for {str(scheduled_date)[:10]}"
+                        print(f"[NOTIF_MGR] Converted to string: {schedule_text}")
+                except Exception as date_error:
+                    print(f"[NOTIF_MGR] Date formatting warning: {str(date_error)}")
+                    logger.warning(f"Could not format scheduled_date {scheduled_date}: {str(date_error)}")
+            
+            print(f"[NOTIF_MGR] Final schedule_text: '{schedule_text}'")
+            logger.info(f"Notifying staff {staff_id} about maintenance task {task_id}: {task_title}")
+            
+            print(f"[NOTIF_MGR] Calling create_notification...")
+            success, notification_id, error = await self.create_notification(
                 notification_type=NotificationType.MAINTENANCE_TASK_ASSIGNED,
                 recipient_id=staff_id,
                 title="Maintenance Task Assigned",
@@ -657,15 +898,26 @@ class NotificationManager:
                 related_entity_id=task_id,
                 priority=NotificationPriority.HIGH,
                 channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
-                action_url=f"/maintenance/{task_id}",
+                action_url=f"{settings.FRONTEND_URL}/#/maintenance/{task_id}",
                 action_label="View Task",
                 requires_action=True
             )
             
-            return True
+            print(f"[NOTIF_MGR] create_notification result: success={success}, notification_id={notification_id}, error={error}")
+            if success:
+                print(f"[NOTIF_MGR] ✓ Notification created successfully (ID: {notification_id}), returning True")
+                logger.info(f"Successfully created maintenance task notification {notification_id} for staff {staff_id}")
+                return True
+            else:
+                print(f"[NOTIF_MGR] ✗ create_notification failed: {error}")
+                logger.error(f"Failed to create maintenance task notification for staff {staff_id}: {error}")
+                return False
             
         except Exception as e:
-            logger.error(f"Error sending maintenance task assigned notification: {str(e)}")
+            print(f"[NOTIF_MGR] EXCEPTION: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            logger.error(f"Error sending maintenance task assigned notification: {str(e)}", exc_info=True)
             return False
     
     async def notify_maintenance_overdue(
@@ -1048,22 +1300,41 @@ class NotificationManager:
                 building_id=building_id
             )
             
-            # Send notification to each recipient
-            for recipient_id in recipients:
-                await self.create_notification(
-                    notification_type=NotificationType.ANNOUNCEMENT_PUBLISHED,
-                    recipient_id=recipient_id,
-                    title=f"New Announcement: {title}",
-                    message=content[:150] + "..." if len(content) > 150 else content,
-                    related_entity_type="announcement",
-                    related_entity_id=announcement_id,
-                    building_id=building_id,
-                    priority=notif_priority,
-                    channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
-                    action_url=f"/announcements/{announcement_id}",
-                    action_label="Read Full Announcement"
-                )
+            logger.info(f"ANNOUNCE NOTIFICATION: announcement_id={announcement_id}, audience={target_audience}, recipients_count={len(recipients)}, recipients={recipients}")
             
+            # Send notification to each recipient
+            created_count = 0
+            failed_recipients = []
+            for recipient_id in recipients:
+                try:
+                    logger.info(f"Creating announcement notification for recipient: {recipient_id}")
+                    result = await self.create_notification(
+                        notification_type=NotificationType.ANNOUNCEMENT_PUBLISHED,
+                        recipient_id=recipient_id,
+                        title=f"New Announcement: {title}",
+                        message=content[:150] + "..." if len(content) > 150 else content,
+                        related_entity_type="announcement",
+                        related_entity_id=announcement_id,
+                        building_id=building_id,
+                        priority=notif_priority,
+                        channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                        action_url=f"{settings.FRONTEND_URL}/#/announcement",
+                        action_label="View Announcement",
+                        custom_data={"icon": "🔊"}  # Speaker icon for announcements
+                    )
+                    if result[0]:
+                        created_count += 1
+                        logger.info(f"✓ Created announcement notification for {recipient_id}, notif_id={result[1]}")
+                    else:
+                        failed_recipients.append((recipient_id, result[2]))
+                        logger.error(f"✗ Failed to create notification for {recipient_id}: {result[2]}")
+                except Exception as e:
+                    failed_recipients.append((recipient_id, str(e)))
+                    logger.error(f"✗ Exception creating notification for {recipient_id}: {str(e)}")
+            
+            logger.info(f"ANNOUNCE COMPLETE: {created_count} notifications created out of {len(recipients)} recipients. Failed: {len(failed_recipients)}")
+            if failed_recipients:
+                logger.warning(f"Failed recipients: {failed_recipients}")
             return True
             
         except Exception as e:
@@ -1092,7 +1363,7 @@ class NotificationManager:
                     related_entity_id=announcement_id,
                     priority=NotificationPriority.HIGH,
                     channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
-                    action_url=f"/announcements/{announcement_id}",
+                    action_url=f"{settings.FRONTEND_URL}/#/announcement",
                     action_label="View Details"
                 )
             
@@ -1296,6 +1567,13 @@ class NotificationManager:
         try:
             recipients = set()
             
+            def extract_user_id(user: dict) -> Optional[str]:
+                """Extract user ID from various possible field names"""
+                return (user.get("id") or 
+                       user.get("_doc_id") or 
+                       user.get("uid") or 
+                       user.get("user_id"))
+            
             # Specific user IDs
             if target_user_ids:
                 recipients.update(target_user_ids)
@@ -1304,31 +1582,79 @@ class NotificationManager:
             if target_roles:
                 for role in target_roles:
                     users = await self._get_users_by_role(role)
-                    recipients.update([user["id"] for user in users if "id" in user])
+                    recipients.update([uid for uid in [extract_user_id(u) for u in users] if uid])
             
             # Target by departments
             if target_departments:
                 for dept in target_departments:
                     users = await self._get_users_by_department(dept)
-                    recipients.update([user["id"] for user in users if "id" in user])
+                    recipients.update([uid for uid in [extract_user_id(u) for u in users] if uid])
             
-            # Target all users
+            # Target all users - use a high limit to ensure we get everyone
             if target_audience == "all":
-                success, users, error = await self.db.query_documents(COLLECTIONS['users'])
-                if success:
-                    recipients.update([user["id"] for user in users if "id" in user])
-            
-            # Filter by building if specified
-            if building_id:
+                # Query all users with a high limit to capture everyone
+                # With 17 users now, using 1000 limit to ensure we never miss anyone
+                success, users, error = await self.db.query_documents(
+                    COLLECTIONS['users'],
+                    limit=1000  # High limit to capture all users
+                )
+                if success and users:
+                    logger.info(f"ALL USERS QUERY: Found {len(users)} total users in database")
+                    extracted_ids = []
+                    for u in users:
+                        user_id = extract_user_id(u)
+                        role = u.get('role', 'unknown')
+                        if user_id:
+                            extracted_ids.append(user_id)
+                            logger.info(f"  User: id={user_id}, role={role}")
+                        else:
+                            logger.warning(f"  Could not extract user ID from user document")
+                    recipients.update(extracted_ids)
+                    logger.info(f"AUDIENCE ALL: Extracted {len(extracted_ids)} user IDs from {len(users)} users")
+                else:
+                    logger.error(f"Failed to query all users: success={success}, users={len(users) if users else 0}, error={error}")
+                    if not success:
+                        raise Exception(f"Failed to query all users: {error}")
+            # Handle specific audience types (tenants, staff, admins)
+            elif target_audience in ["tenants", "staff", "admins"]:
+                # Map audience names to role names
+                role_map = {
+                    "tenants": "tenant",
+                    "staff": "staff",
+                    "admins": "admin"
+                }
+                role = role_map.get(target_audience)
+                if role:
+                    users = await self._get_users_by_role(role)
+                    extracted_ids = []
+                    for u in users:
+                        user_id = extract_user_id(u)
+                        if user_id:
+                            extracted_ids.append(user_id)
+                            logger.info(f"  {target_audience.upper()}: id={user_id}")
+                        else:
+                            logger.warning(f"  Could not extract user ID from user document")
+                    recipients.update(extracted_ids)
+                    logger.info(f"AUDIENCE {target_audience.upper()}: Extracted {len(extracted_ids)} user IDs")
+            # For building-specific audiences, filter by building
+            elif building_id:
                 building_users = []
                 success, users, error = await self.db.query_documents(
                     COLLECTIONS['users'],
                     [('building_id', '==', building_id)]
                 )
                 if success:
-                    building_user_ids = set([user["id"] for user in users if "id" in user])
+                    building_user_ids = set([uid for uid in [extract_user_id(u) for u in users] if uid])
                     recipients = recipients.intersection(building_user_ids)
             
+            logger.info(f"Announcement recipients determined: {len(recipients)} users for audience={target_audience}")
+            logger.info(f"Recipients list: {sorted(recipients)}")
+            # Check if admin is in recipients
+            admin_check = [r for r in recipients if 'Zp3YkC3QUFPNpXqk6WF5T1KZl6U2' in r]
+            if admin_check:
+                logger.info(f"✓ Admin (Zp3YkC3QUFPNpXqk6WF5T1KZl6U2) IS in recipients list")
+            else:
+                logger.warning(f"⚠ Admin (Zp3YkC3QUFPNpXqk6WF5T1KZl6U2) NOT in recipients list!")
             return list(recipients)
             
         except Exception as e:
@@ -1420,6 +1746,44 @@ class NotificationManager:
         except Exception as e:
             logger.error(f"Error sending concern slip submitted notifications: {str(e)}")
 
+    async def notify_concern_slip_created_to_tenant(
+        self,
+        concern_slip_id: str,
+        title: str,
+        tenant_id: str,
+        category: str,
+        priority: str,
+        location: str,
+        description: Optional[str] = None
+    ):
+        """Notify tenant when their concern slip is created (acknowledgment)"""
+        try:
+            await self.create_notification(
+                notification_type=NotificationType.CONCERN_SLIP_SUBMITTED,
+                recipient_id=tenant_id,
+                title="Concern Slip Submitted",
+                message=f"Your concern slip '{title}' has been received and is being reviewed. Category: {category}, Priority: {priority}",
+                related_entity_type="concern_slip",
+                related_entity_id=concern_slip_id,
+                priority=NotificationPriority.NORMAL,
+                action_url=f"/concern-slips/{concern_slip_id}",
+                custom_data={
+                    "concern_slip_id": concern_slip_id,
+                    "category": category,
+                    "priority": priority,
+                    "location": location,
+                    "title": title,
+                    "description": description
+                },
+                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                expires_at=datetime.utcnow() + timedelta(days=7)
+            )
+            
+            logger.info(f"Sent concern slip creation acknowledgment notification to tenant {tenant_id} for {concern_slip_id}")
+            
+        except Exception as e:
+            logger.error(f"Error sending concern slip creation notification to tenant: {str(e)}")
+
     async def notify_concern_slip_assigned(
         self,
         concern_slip_id: str,
@@ -1459,6 +1823,43 @@ class NotificationManager:
         except Exception as e:
             logger.error(f"Error sending concern slip assignment notification: {str(e)}")
 
+    async def notify_concern_slip_assigned_to_tenant(
+        self,
+        concern_slip_id: str,
+        title: str,
+        reported_by: str,
+        category: str,
+        priority: str,
+        location: str
+    ):
+        """Notify tenant when their concern slip has been assigned to staff"""
+        try:
+            await self.create_notification(
+                notification_type=NotificationType.CONCERN_SLIP_ASSIGNED,
+                recipient_id=reported_by,
+                title="Concern Slip Assigned",
+                message=f"Your concern slip '{title}' has been assigned to our support team for assessment. Category: {category}, Priority: {priority}, Location: {location}",
+                related_entity_type="concern_slip",
+                related_entity_id=concern_slip_id,
+                priority=NotificationPriority.HIGH if priority == "critical" else NotificationPriority.NORMAL,
+                action_url=f"/concern-slips/{concern_slip_id}",
+                custom_data={
+                    "concern_slip_id": concern_slip_id,
+                    "category": category,
+                    "priority": priority,
+                    "location": location,
+                    "title": title,
+                    "status_update": "assigned"
+                },
+                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                expires_at=datetime.utcnow() + timedelta(days=7)
+            )
+            
+            logger.info(f"Sent concern slip assignment notification to tenant {reported_by} for {concern_slip_id}")
+            
+        except Exception as e:
+            logger.error(f"Error sending concern slip assignment notification to tenant: {str(e)}")
+
     async def notify_concern_slip_assessed(
         self,
         concern_slip_id: str,
@@ -1477,14 +1878,14 @@ class NotificationManager:
             
             for admin_id in admin_ids:
                 await self.create_notification(
-                    notification_type=NotificationType.CONCERN_SLIP_ASSESSED,
+                    notification_type=NotificationType.MAINTENANCE_COMPLETED,
                     recipient_id=admin_id,
                     title="Concern Slip Assessment Completed",
                     message=f"Staff assessment completed for '{title}'. Resolution: {resolution_display}. {assessment[:100]}{'...' if len(assessment) > 100 else ''}",
                     related_entity_type="concern_slip",
                     related_entity_id=concern_slip_id,
                     priority=NotificationPriority.HIGH,
-                    action_url=f"/concern-slips/{concern_slip_id}",
+                    action_url="/work/repair",
                     custom_data={
                         "concern_slip_id": concern_slip_id,
                         "assessed_by": staff_id,
@@ -1501,6 +1902,47 @@ class NotificationManager:
             
         except Exception as e:
             logger.error(f"Error sending concern slip assessment notifications: {str(e)}")
+
+    async def notify_concern_slip_assessment_completed_to_tenant(
+        self,
+        concern_slip_id: str,
+        title: str,
+        reported_by: str,
+        assessment: str,
+        resolution_type: str
+    ):
+        """Notify tenant when staff completes assessment of their concern slip"""
+        try:
+            # Format resolution type for display
+            resolution_display = "Job Service" if resolution_type == "job_service" else "Work Order Permit"
+            
+            # Create a summary of the assessment for the tenant
+            assessment_summary = assessment[:150] + "..." if len(assessment) > 150 else assessment
+            
+            await self.create_notification(
+                notification_type=NotificationType.MAINTENANCE_COMPLETED,
+                recipient_id=reported_by,
+                title="Concern Slip Assessment Completed",
+                message=f"Your concern slip '{title}' has been assessed. Resolution type: {resolution_display}. Assessment: {assessment_summary}",
+                related_entity_type="concern_slip",
+                related_entity_id=concern_slip_id,
+                priority=NotificationPriority.HIGH,
+                action_url="/work/repair",
+                custom_data={
+                    "concern_slip_id": concern_slip_id,
+                    "assessment": assessment,
+                    "resolution_type": resolution_type,
+                    "title": title,
+                    "status_update": "assessment_completed"
+                },
+                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                expires_at=datetime.utcnow() + timedelta(days=7)
+            )
+            
+            logger.info(f"Sent assessment completion notification to tenant {reported_by} for {concern_slip_id}")
+            
+        except Exception as e:
+            logger.error(f"Error sending assessment completion notification to tenant: {str(e)}")
 
     async def notify_concern_slip_evaluated(
         self,
@@ -1625,6 +2067,61 @@ class NotificationManager:
             
         except Exception as e:
             logger.error(f"Error sending concern slip return notification: {str(e)}")
+
+    async def notify_priority_escalated(
+        self,
+        item_id: str,
+        title: str,
+        message: str,
+        old_priority: str,
+        new_priority: str,
+        collection_type: str
+    ) -> None:
+        """
+        Send notification to admins when an item is auto-escalated due to aging
+        
+        Args:
+            item_id: ID of escalated item
+            title: Item title
+            message: Escalation message
+            old_priority: Previous priority level
+            new_priority: New priority level
+            collection_type: Type of collection (concern_slips, job_services, work_order_permits)
+        """
+        try:
+            # Map collection type to action URLs using configurable frontend URL
+            action_url_map = {
+                "concern_slips": f"{settings.FRONTEND_URL}/#/concern-slips/{item_id}",
+                "job_services": f"{settings.FRONTEND_URL}/#/job-services/{item_id}",
+                "work_order_permits": f"{settings.FRONTEND_URL}/#/work-order-permits/{item_id}"
+            }
+            
+            action_url = action_url_map.get(collection_type, f"{settings.FRONTEND_URL}/#/{collection_type}/{item_id}")
+            
+            # Create notification for all admins
+            await self.create_bulk_notifications(
+                notification_type=NotificationType.PRIORITY_ESCALATED,
+                recipient_ids=[],  # Will be populated by fetching admins
+                title=f"Priority Escalated: {item_id}",
+                message=message,
+                related_entity_type=collection_type,
+                related_entity_id=item_id,
+                priority=NotificationPriority.HIGH,
+                channels=[NotificationChannel.IN_APP],
+                action_url=action_url,
+                custom_data={
+                    "escalation_type": "auto_aging",
+                    "old_priority": old_priority,
+                    "new_priority": new_priority,
+                    "collection": collection_type
+                },
+                expires_at=datetime.utcnow() + timedelta(days=7)
+            )
+            
+            logger.info(f"Sent priority escalation notification for {item_id}")
+            
+        except Exception as e:
+            logger.error(f"Error sending priority escalation notification: {str(e)}")
 
 
 # Create global notification manager instance

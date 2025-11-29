@@ -5,6 +5,7 @@ from datetime import datetime
 from app.models.database_models import JobService
 from app.services.job_service_service import JobServiceService
 from app.services.concern_slip_service import ConcernSlipService
+from app.services.schedule_formatter import normalize_schedule_availability
 from app.auth.dependencies import get_current_user, require_role
 import logging
 
@@ -64,6 +65,7 @@ async def create_tenant_job_service(
             "location": request.location,
             "category": concern_slip.category,
             "priority": concern_slip.priority,
+            "schedule_availability": normalize_schedule_availability(request.schedule_availability or concern_slip.schedule_availability),
             "scheduled_date": None,
             "estimated_hours": None,
         }

@@ -27,6 +27,32 @@ class Settings:
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
     USE_GROQ: bool = os.getenv("USE_GROQ", "false").lower() == "true"
 
+    # Auto-escalation settings
+    ENABLE_AUTO_ESCALATION: bool = os.getenv("ENABLE_AUTO_ESCALATION", "true").lower() == "true"
+    ## PRODUCTION: Age in days
+    #ESCALATION_TIME_UNIT: str = os.getenv("ESCALATION_TIME_UNIT", "days")
+    #ESCALATE_LOW_TO_MED_DAYS: int = int(os.getenv("ESCALATE_LOW_TO_MED_DAYS", "3"))
+    #ESCALATE_LOW_TO_HIGH_DAYS: int = int(os.getenv("ESCALATE_LOW_TO_HIGH_DAYS", "5"))
+    #ESCALATE_MED_TO_HIGH_DAYS: int = int(os.getenv("ESCALATE_MED_TO_HIGH_DAYS", "5"))
+    #DEMO: Uncomment below and comment above to test with minutes instead of days
+    ESCALATION_TIME_UNIT: str = "minutes"
+    ESCALATE_LOW_TO_MED_DAYS: int = 3    # 5 minutes
+    ESCALATE_LOW_TO_HIGH_DAYS: int = 6   # 10 minutes
+    ESCALATE_MED_TO_HIGH_DAYS: int = 6   # 10 minutes
+
+    # Frontend URL for notification action links
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3748")
+    
+    # Maintenance reminder settings
+    ## PRODUCTION: Reminders in days (7 days, 3 days, 1 day before, and day itself)
+    #MAINTENANCE_REMINDER_DAYS: list = [7, 3, 1, 0]
+    ## DEMO: Uncomment below and comment above to test with minutes instead of days
+    MAINTENANCE_REMINDER_DAYS: list = [10/60, 5/60, 3/60, 0]  # 10 minutes, 5 minutes, 3 minutes before, and day itself (for demo)
+    
+    # Timezone for date conversion (default to UTC+8 for Philippines/Asia)
+    # Set via environment variable: TZ_OFFSET=8 for UTC+8, etc.
+    TZ_OFFSET: int = int(os.getenv("TZ_OFFSET", "8"))
+
 
 settings = Settings()
 

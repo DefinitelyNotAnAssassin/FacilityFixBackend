@@ -11,7 +11,8 @@ celery_app = Celery(
         "app.tasks.inventory_tasks",
         "app.tasks.analytics_tasks",
         "app.tasks.notification_tasks",
-        "app.tasks.maintenance_tasks"  # Including new maintenance tasks module
+        "app.tasks.maintenance_tasks",  # Including new maintenance tasks module
+        "app.tasks.escalation_tasks"  # Auto-escalation task
     ]
 )
 
@@ -85,6 +86,11 @@ celery_app.conf.beat_schedule = {
     'send-maintenance-reminders': {
         'task': 'app.tasks.notification_tasks.send_scheduled_maintenance_reminders',
         'schedule': 86400.0,  # Daily
+    },
+    # Check and escalate aging pending items
+    'check-and-escalate-pending-items': {
+        'task': 'app.tasks.escalation_tasks.check_and_escalate_pending_items',
+        'schedule': 86400.0,  # Daily (24 hours)
     },
 }
 

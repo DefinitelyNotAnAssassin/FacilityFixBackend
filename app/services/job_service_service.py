@@ -3,12 +3,14 @@ from datetime import datetime
 from app.models.database_models import JobService, UserProfile, ConcernSlip, Notification
 from app.database.database_service import DatabaseService
 from app.services.user_id_service import UserIdService
+from app.services.notification_manager import NotificationManager
 import uuid
 
 class JobServiceService:
     def __init__(self):
         self.db = DatabaseService()
         self.user_service = UserIdService()
+        self.notification_manager = NotificationManager()
 
     async def create_job_service(self, concern_slip_id: str, created_by: str, job_data: dict) -> JobService:
         """Create a new job service from an approved concern slip"""
@@ -40,6 +42,7 @@ class JobServiceService:
             "status": "assigned",
             "assigned_to": job_data.get("assigned_to"),
             "scheduled_date": job_data.get("scheduled_date"),
+            "schedule_availability": job_data.get("schedule_availability") or concern_slip_data.get("schedule_availability"),
             "estimated_hours": job_data.get("estimated_hours"),
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
@@ -120,12 +123,39 @@ class JobServiceService:
         if not success:
             raise ValueError(f"Failed to assign job service: {error}")
         
-        # Send notification to assigned staff
-        await self._send_assignment_notification(
-            assigned_to, 
-            job_service_id,
-            job_service_data.get("title", "Job Service Assignment")
+        # Send notifications using NotificationManager
+        # Convert staff_id to Firebase UID for notification
+        try:
+            staff_profile = await UserIdService.get_staff_profile_from_staff_id(assigned_to)
+            firebase_uid = staff_profile.id if staff_profile else assigned_to
+        except Exception as e:
+            print(f"Could not convert staff_id to Firebase UID: {str(e)}, using staff_id directly")
+            firebase_uid = assigned_to
+        
+        # Get tenant info from job service
+        tenant_id = job_service_data.get("created_by")
+        
+        # Notify staff about assignment
+        await self.notification_manager.notify_job_service_assigned_to_staff(
+            job_service_id=job_service_id,
+            title=job_service_data.get("title", "Job Service Assignment"),
+            staff_id=firebase_uid,
+            assigned_by=assigned_by,
+            category=job_service_data.get("category", "General"),
+            priority=job_service_data.get("priority", "normal"),
+            location=job_service_data.get("location", "Unknown")
         )
+        
+        # Notify tenant about assignment
+        if tenant_id:
+            await self.notification_manager.notify_job_service_assigned_to_tenant(
+                job_service_id=job_service_id,
+                title=job_service_data.get("title", "Job Service"),
+                tenant_id=tenant_id,
+                category=job_service_data.get("category", "General"),
+                priority=job_service_data.get("priority", "normal"),
+                location=job_service_data.get("location", "Unknown")
+            )
 
         # Get updated job service
         success, updated_jobs_data, error = await self.db.query_documents(collection_name, [("id", job_service_id)])
@@ -136,6 +166,7 @@ class JobServiceService:
 
     async def update_job_status(self, job_service_id: str, status: str, updated_by: str, notes: Optional[str] = None) -> JobService:
         """Update job service status"""
+        print(f"[STATUS_UPDATE] Job ID: {job_service_id}, Status being set to: '{status}'")
         
         valid_statuses = ["assigned", "in_progress", "completed", "closed"]
         if status not in valid_statuses:
@@ -190,12 +221,18 @@ class JobServiceService:
                         "updated_at": datetime.utcnow()
                     })
                     
-                    # Notify tenant of completion
-                    await self._send_tenant_notification(
-                        concern_slip_data.get("reported_by"),
-                        job_service_id,
-                        f"Your repair request has been completed: {job_service_data.get('title')}"
-                    )
+                    # Notify tenant and admin of completion
+                    tenant_id = concern_slip_data.get("reported_by")
+                    admin_id = job_service_data.get("created_by")
+                    if tenant_id and admin_id:
+                        await self.notification_manager.notify_job_service_completed(
+                            job_service_id=job_service_id,
+                            staff_id=updated_by,
+                            tenant_id=tenant_id,
+                            admin_id=admin_id,
+                            title=job_service_data.get('title', 'Job Service'),
+                            completion_notes=notes
+                        )
 
         # Get updated job service
         success, updated_jobs_data, error = await self.db.query_documents(collection_name, [("id", job_service_id)])
@@ -280,15 +317,18 @@ class JobServiceService:
 
         return enriched_data
 
-    async def get_job_service(self, job_service_id: str) -> Optional[JobService]:
-        """Get job service by ID from either collection"""
+    async def get_job_service(self, job_service_id: str) -> Optional[dict]:
+        """Get job service by ID from either collection - returns raw dict"""
         print(f"[JobServiceService] Looking for job service with ID: {job_service_id}")
         
         # Try job_services collection first
         success, jobs_data, error = await self.db.query_documents("job_services", [("id", job_service_id)])
         if success and jobs_data and len(jobs_data) > 0:
             print(f"[JobServiceService] Found job service in job_services collection")
-            enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            raw_data = jobs_data[0]
+            print(f"[DEBUG] Raw DB data: {raw_data}")
+            enriched_data = await self._enrich_job_service_with_user_info(raw_data)
+            print(f"[DEBUG] Enriched data schedule_availability: {enriched_data.get('schedule_availability')} (type: {type(enriched_data.get('schedule_availability'))})")
             if enriched_data.get("completion_notes"):
                 enriched_data["assessment"] = enriched_data["completion_notes"]
             if enriched_data.get("assessed_by"):
@@ -299,7 +339,8 @@ class JobServiceService:
                         enriched_data["assessed_by_name"] = f"{staff_profile.first_name} {staff_profile.last_name}"
                 except Exception:
                     pass
-            return JobService(**enriched_data)
+            # Return the enriched dict directly without model conversion
+            return enriched_data
 
         # If not found, try job_service_requests collection
         success, jobs_data, error = await self.db.query_documents("job_service_requests", [("id", job_service_id)])
@@ -316,7 +357,8 @@ class JobServiceService:
                         enriched_data["assessed_by_name"] = f"{staff_profile.first_name} {staff_profile.last_name}"
                 except Exception:
                     pass
-            return JobService(**enriched_data)
+            # Return the enriched dict directly without model conversion
+            return enriched_data
 
         print(f"[JobServiceService] Job service not found in either collection")
         return None
@@ -488,6 +530,7 @@ class JobServiceService:
             "status": "pending",  # Tenant-created job services start as pending
             "assigned_to": None,  # Will be assigned by admin later
             "scheduled_date": job_data.get("scheduled_date"),
+            "schedule_availability": job_data.get("schedule_availability"),
             "estimated_hours": job_data.get("estimated_hours"),
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
@@ -503,17 +546,14 @@ class JobServiceService:
             "updated_at": datetime.utcnow()
         }, validate=False)
 
-        # Send notification to admins about new tenant job service request
-        await self._send_admin_notification(
-            job_service_data["id"],
-            f"New job service request from tenant for: {job_service_data['title']}"
-        )
-
-        # Send notification to tenant confirming submission
-        await self._send_tenant_notification(
-            created_by,
-            job_service_data["id"],
-            "Your job service request has been submitted successfully and is pending admin review"
+        # Send notifications using NotificationManager
+        await self.notification_manager.notify_job_service_submitted_by_tenant(
+            job_service_id=job_service_data["id"],
+            title=job_service_data["title"],
+            tenant_id=created_by,
+            category=job_service_data["category"],
+            priority=job_service_data["priority"],
+            location=job_service_data["location"]
         )
 
         return JobService(**job_service_data)
@@ -556,7 +596,7 @@ class JobServiceService:
         notification_data = {
             "id": str(uuid.uuid4()),
             "recipient_id": recipient_id,
-            "title": "Job Service Update",
+            "title": "Job Service Submitted",
             "message": message,
             "notification_type": "job_update",
             "related_id": job_service_id,

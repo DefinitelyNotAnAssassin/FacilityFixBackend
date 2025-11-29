@@ -77,6 +77,9 @@ class AnnouncementService:
             # Determine if announcement should be published now
             now = datetime.now(timezone.utc)
             
+            # DEBUG: Log the is_published value being received
+            logger.info(f"Creating announcement with is_published={is_published}, scheduled_publish_date={scheduled_publish_date}")
+            
             # Ensure scheduled_publish_date is timezone-aware if provided
             if scheduled_publish_date and scheduled_publish_date.tzinfo is None:
                 scheduled_publish_date = scheduled_publish_date.replace(tzinfo=timezone.utc)
@@ -85,7 +88,16 @@ class AnnouncementService:
             if expiry_date and expiry_date.tzinfo is None:
                 expiry_date = expiry_date.replace(tzinfo=timezone.utc)
             
+            # Publish immediately if is_published=True and no future scheduled date
             should_publish_now = is_published and (scheduled_publish_date is None or scheduled_publish_date <= now)
+            logger.info(f"Announcement: should_publish_now={should_publish_now}, is_published={is_published}, scheduled_date={scheduled_publish_date}")
+            
+            # CRITICAL FIX: If is_published=True, always publish NOW
+            # The scheduled_publish_date is stored for reference but SHOULD NOT prevent immediate publishing
+            # The UI doesn't support "save as draft", so is_published=True means "publish immediately"
+            if is_published:
+                should_publish_now = True
+                logger.info(f"is_published=True - FORCING immediate publish NOW (ignoring scheduled_date)")
             
             # Create announcement data
             announcement_data = {
@@ -138,13 +150,15 @@ class AnnouncementService:
             logger.info(f"Announcement created: {formatted_id} ({announcement_id}) by {created_by}")
             
             # Broadcast announcement via notification channels only if published immediately
-            if should_publish_now and (send_notifications or send_email):
+            if should_publish_now:
+                # Always send notifications when announcement is published, unless explicitly disabled
                 await self._broadcast_announcement(
                     announcement_data, 
-                    send_notifications=send_notifications,
+                    send_notifications=True,  # Always notify when published
                     send_email=send_email
                 )
-            elif not should_publish_now:
+                logger.info(f"Broadcasting announcement {formatted_id} to audience: {audience}")
+            else:
                 logger.info(f"Announcement {formatted_id} created as draft or scheduled for later")
             
             return True, announcement_id, None
@@ -323,31 +337,20 @@ class AnnouncementService:
             title = announcement_data['title']
             content = announcement_data['content']
             announcement_type = announcement_data['type']
+            announcement_id = announcement_data.get('formatted_id') or announcement_data.get('id')
             
             # Get enhanced targeting parameters
             target_departments = announcement_data.get('target_departments', [])
             target_user_ids = announcement_data.get('target_user_ids', [])
             target_roles = announcement_data.get('target_roles', [])
             
-            # Get target users based on advanced targeting
-            target_users = await self._get_target_users(
-                building_id, 
-                audience,
-                target_departments=target_departments,
-                target_user_ids=target_user_ids,
-                target_roles=target_roles
-            )
+            logger.info(f"Broadcasting announcement {announcement_id}: audience={audience}, building={building_id}")
             
-            if not target_users:
-                logger.warning(f"No target users found for announcement in building {building_id}")
-                return
-
-            # Create centralized in-app/push notifications for the announcement
+            # Send centralized in-app/push notifications using notification_manager
+            # This handles all user retrieval and notification logic
             try:
-                # Use formatted_id where available for nicer references
-                ann_ref_id = announcement_data.get('formatted_id') or announcement_data.get('id')
                 await notification_manager.notify_announcement_published(
-                    announcement_id=ann_ref_id,
+                    announcement_id=announcement_id,
                     title=title,
                     content=content,
                     target_audience=audience,
@@ -358,22 +361,16 @@ class AnnouncementService:
                     priority=announcement_data.get('priority_level', 'normal'),
                     announcement_type=announcement_type
                 )
+                logger.info(f"Successfully broadcast announcement {announcement_id}")
             except Exception as e:
-                logger.warning(f"Failed to call notification_manager for announcement: {str(e)}")
+                logger.error(f"Failed to broadcast announcement {announcement_id}: {str(e)}")
             
             # Send WebSocket real-time updates
             if send_notifications:
                 await self._send_websocket_announcement(announcement_data)
             
-            # Send push notifications and in-app notifications
-            if send_notifications:
-                await self._send_push_notifications(announcement_data, target_users)
-            
-            # Send email notifications
-            if send_email:
-                await self._send_email_announcements(announcement_data, target_users)
-            
-            logger.info(f"Announcement broadcast completed for {len(target_users)} users")
+            # Note: Push notifications and email are now handled by notification_manager.notify_announcement_published()
+            # which is called above in _broadcast_announcement()
             
         except Exception as e:
             logger.error(f"Error broadcasting announcement: {str(e)}")

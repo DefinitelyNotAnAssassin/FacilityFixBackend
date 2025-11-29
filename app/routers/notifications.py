@@ -104,25 +104,13 @@ async def get_user_notifications(
     try:
         user_id = current_user["uid"]
         user_role = current_user.get("role", "").lower()
-        print(f"USER ID: {user_id}, ROLE: {user_role}")
+        user_email = current_user.get("email", "")
+        print(f"\n[GET_NOTIFICATIONS] USER ID: {user_id}, ROLE: {user_role}, EMAIL: {user_email}")
         
-        # Determine the recipient_id based on user role
-        recipient_id = user_id  # Default for tenant/admin
+        # All users are stored with their uid as recipient_id in notifications
+        recipient_id = user_id
         
-        if user_role == "staff":
-            # For staff users, get their staff document and use staff_id
-            success, staff_doc, error = await database_service.get_document(
-                COLLECTIONS['users'],
-                user_id
-            )
-            
-            if success and staff_doc:
-                recipient_id = staff_doc.get("staff_id") or staff_doc.get("id")
-                print(f"Staff recipient_id: {recipient_id}")
-            else:
-                logger.warning(f"Staff document not found for user_id: {user_id}")
-                # Fall back to user_id if staff document not found
-                recipient_id = user_id
+        logger.info(f"FETCHING NOTIF: user_id={user_id}, role={user_role}, email={user_email}, recipient_id={recipient_id}, unread_only={unread_only}")
         
         # Build filters
         filters = [("recipient_id", "==", recipient_id)]
@@ -136,23 +124,30 @@ async def get_user_notifications(
         if priority:
             filters.append(("priority", "==", priority))
         
-        # Query notifications
+        logger.info(f"FETCHING NOTIF FILTERS: {filters}")
+        
+        # Query notifications - fetch ALL without limit first, then we'll sort and apply limit
         success, notifications, error = await database_service.query_documents(
             COLLECTIONS['notifications'],
             filters=filters,
-            limit=limit
+            limit=None  # Fetch all, we'll sort and paginate after
         )
+        
+        logger.info(f"FETCHING NOTIF RESULT: success={success}, count={len(notifications) if notifications else 0}, error={error}")
+        print(f"[GET_NOTIFICATIONS] Query result: success={success}, count={len(notifications) if notifications else 0}")
         
         if not success:
             raise HTTPException(status_code=500, detail=f"Failed to retrieve notifications: {error}")
         
-        # Sort by created_at descending
-        notifications.sort(key=lambda x: x.get('created_at', datetime.min), reverse=True)
+        # Sort by created_at descending (newest first)
+        if notifications:
+            notifications.sort(key=lambda x: x.get('created_at', datetime.min), reverse=True)
         
-        # Apply offset
-        notifications = notifications[offset:]
+        # Apply offset and limit to sorted results
+        notifications = notifications[offset:offset + limit]
         
-        print(f"Found {len(notifications)} notifications for recipient_id: {recipient_id}")
+        logger.info(f"Returning {len(notifications)} notifications after pagination (offset={offset}, limit={limit})")
+        print(f"[GET_NOTIFICATIONS] Found {len(notifications)} notifications for recipient_id: {recipient_id}")
         return notifications
         
     except HTTPException:
@@ -208,23 +203,8 @@ async def get_unread_count(
         user_id = current_user["uid"]
         user_role = current_user.get("role", "").lower()
         
-        # Determine the recipient_id based on user role
-        recipient_id = user_id  # Default for tenant/admin
-        
-        if user_role == "staff":
-            # For staff users, get their staff document and use staff_id
-            success, staff_doc, error = await database_service.query_documents(
-                COLLECTIONS['staff'],
-                filters=[("user_id", "==", user_id)],
-                limit=1
-            )
-            
-            if success and staff_doc:
-                recipient_id = staff_doc[0].get("staff_id") or staff_doc[0].get("id")
-            else:
-                logger.warning(f"Staff document not found for user_id: {user_id}")
-                # Fall back to user_id if staff document not found
-                recipient_id = user_id
+        # All users are stored with their uid as recipient_id in notifications
+        recipient_id = user_id
         
         filters = [
             ("recipient_id", "==", recipient_id),
@@ -258,22 +238,8 @@ async def mark_notifications_read(
         user_id = current_user["uid"]
         user_role = current_user.get("role", "").lower()
         
-        # Determine the recipient_id based on user role
-        recipient_id = user_id  # Default for tenant/admin
-        
-        if user_role == "staff":
-            # For staff users, get their staff document and use staff_id
-            success, staff_doc, error = await database_service.query_documents(
-                COLLECTIONS['staff'],
-                filters=[("user_id", "==", user_id)],
-                limit=1
-            )
-            
-            if success and staff_doc:
-                recipient_id = staff_doc[0].get("staff_id") or staff_doc[0].get("id")
-            else:
-                logger.warning(f"Staff document not found for user_id: {user_id}")
-                recipient_id = user_id
+        # All users are stored with their uid as recipient_id in notifications
+        recipient_id = user_id
         
         updated_count = 0
         
