@@ -361,16 +361,38 @@ async def assign_staff_to_concern_slip(
     This is step 2 of the workflow after tenant submits.
     """
     try:
+        if not current_user:
+            logger.error("[ERROR] current_user is None in assign_staff_to_concern_slip endpoint")
+            raise HTTPException(status_code=401, detail="User authentication failed")
+        
+        assigned_by = current_user.get("uid") or current_user.get("user_id") or current_user.get("id")
+        if not assigned_by:
+            logger.error(f"[ERROR] Cannot extract user ID from current_user: {current_user}")
+            raise HTTPException(status_code=401, detail="Invalid user identity")
+
+        if not request or not request.assigned_to:
+            logger.error(f"[ERROR] Request validation failed - request: {request}, assigned_to: {request.assigned_to if request else 'None'}")
+            raise HTTPException(status_code=400, detail="assigned_to field is required and cannot be empty")
+        
+        assigned_to_value = request.assigned_to.strip() if isinstance(request.assigned_to, str) else str(request.assigned_to)
+        if not assigned_to_value:
+            logger.error(f"[ERROR] assigned_to is empty after stripping: {request.assigned_to}")
+            raise HTTPException(status_code=400, detail="assigned_to field cannot be empty")
+
+        logger.info(f"[INFO] Route handler - concern_slip_id: {concern_slip_id}, assigned_to: {assigned_to_value}, assigned_by: {assigned_by}")
+
         service = ConcernSlipService()
         concern_slip = await service.assign_staff_for_assessment(
             concern_slip_id=concern_slip_id,
-            assigned_to=request.assigned_to,
-            assigned_by=current_user["uid"]
+            assigned_to=assigned_to_value,
+            assigned_by=assigned_by,
         )
         return concern_slip
     except ValueError as e:
+        logger.error(f"[ERROR] ValueError in assign_staff_to_concern_slip: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error(f"[ERROR] Error in assign_staff_to_concern_slip: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to assign staff: {str(e)}"

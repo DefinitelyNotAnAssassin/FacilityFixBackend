@@ -113,47 +113,65 @@ class ConcernSlipService:
         return ConcernSlip(**concern_slip_data)
 
     async def get_concern_slip(self, concern_slip_id: str) -> Optional[ConcernSlip]:
-        """Get concern slip by ID"""
+        """Get concern slip by ID (supports both UUID and formatted ID like CS-2025-00001)"""
+        # First try direct lookup by UUID
         success, concern_data, error = await self.db.get_document("concern_slips", concern_slip_id)
         filtered_attachments = [] 
         
         attachments = await database_service.query_documents("file_attachments", [("entity_id", "==", concern_slip_id)])
-        for attachment in attachments[1]:
-           filtered_attachments.append(attachment['download_url'])
+        if attachments and len(attachments) > 1:
+            for attachment in attachments[1]:
+                filtered_attachments.append(attachment.get('download_url', ''))
 
-        concern_data['attachments'] = filtered_attachments
+        if concern_data and isinstance(concern_data, dict):
+            concern_data['attachments'] = filtered_attachments
 
         
         if not success or not concern_data:
             success, results, error = await self.db.query_documents("concern_slips", [("id", "==", concern_slip_id)])
-            if not success or not results:
-                return None
-            concern_data = results[0]
+            if success and results and len(results) > 0:
+                concern_data = results[0]
+        
+        if not success or not concern_data:
+            logger.info(f"[v0] Trying formatted_id lookup for: {concern_slip_id}")
+            success, results, error = await self.db.query_documents("concern_slips", [("formatted_id", "==", concern_slip_id)])
+            if success and results and len(results) > 0:
+                concern_data = results[0]
+                logger.info(f"[v0] Found concern slip by formatted_id: {concern_slip_id}")
+        
+        if not concern_data:
+            logger.error(f"[ERROR] Concern slip not found in any collection: {concern_slip_id}")
+            return None
+        
+        if "id" not in concern_data or not concern_data.get("id"):
+            logger.warning(f"[v0] Concern slip missing internal 'id' field, will use formatted_id: {concern_data.get('formatted_id')}")
+            concern_data["id"] = concern_data.get("formatted_id", concern_slip_id)
         
         # Enrich assigned staff profile so frontend can show staff name when assigned
         try:
-            assigned_to = concern_data.get('assigned_to') if isinstance(concern_data, dict) else None
-            if assigned_to:
-                # Try staff lookup by staff_id first, then by user_id
-                staff_profile = None
-                try:
-                    staff_profile = await UserIdService.get_staff_profile_from_staff_id(assigned_to)
-                except Exception:
+            if concern_data and isinstance(concern_data, dict):
+                assigned_to = concern_data.get('assigned_to')
+                if assigned_to:
+                    # Try staff lookup by staff_id first, then by user_id
                     staff_profile = None
-
-                if not staff_profile:
                     try:
-                        staff_profile = await UserIdService.get_user_profile(assigned_to)
+                        staff_profile = await UserIdService.get_staff_profile_from_staff_id(assigned_to)
                     except Exception:
                         staff_profile = None
 
-                if staff_profile:
-                    concern_data['staff_profile'] = {
-                        'staff_id': getattr(staff_profile, 'staff_id', None),
-                        'first_name': getattr(staff_profile, 'first_name', None),
-                        'last_name': getattr(staff_profile, 'last_name', None),
-                        'full_name': f"{getattr(staff_profile, 'first_name', '')} {getattr(staff_profile, 'last_name', '')}".strip()
-                    }
+                    if not staff_profile:
+                        try:
+                            staff_profile = await UserIdService.get_user_profile(assigned_to)
+                        except Exception:
+                            staff_profile = None
+
+                    if staff_profile:
+                        concern_data['staff_profile'] = {
+                            'staff_id': getattr(staff_profile, 'staff_id', None),
+                            'first_name': getattr(staff_profile, 'first_name', None),
+                            'last_name': getattr(staff_profile, 'last_name', None),
+                            'full_name': f"{getattr(staff_profile, 'first_name', '')} {getattr(staff_profile, 'last_name', '')}".strip()
+                        }
 
         except Exception as e:
             logger.debug(f"Failed to enrich staff profile for concern {concern_slip_id}: {e}")
@@ -471,48 +489,55 @@ class ConcernSlipService:
         assigned_by: str
     ) -> ConcernSlip:
         """Assign a staff member to assess a concern slip"""
-        logger.info(f"[v0] Starting staff assignment - concern_slip_id: {concern_slip_id}, assigned_to: {assigned_to}, assigned_by: {assigned_by}")
+        logger.info(f"[INFO] Starting staff assignment - concern_slip_id: {concern_slip_id}, assigned_to: {assigned_to}, assigned_by: {assigned_by}")
+        
+        if not assigned_to or not isinstance(assigned_to, str) or assigned_to.strip() == "":
+            logger.error(f"[ERROR] Invalid assigned_to value: {assigned_to} (type: {type(assigned_to)})")
+            raise ValueError(f"Invalid staff ID provided: assigned_to cannot be empty")
         
         concern = await self.get_concern_slip(concern_slip_id)
         if not concern:
-            logger.error(f"[v0] Concern slip not found: {concern_slip_id}")
+            logger.error(f"[ERROR] Concern slip not found: {concern_slip_id}")
             raise ValueError("Concern slip not found")
         
-        logger.info(f"[v0] Concern slip found - status: {concern.status}")
+        logger.info(f"[INFO] Concern slip found - status: {concern.status}")
         
         if concern.status not in ["pending", "evaluated"]:
-            logger.error(f"[v0] Invalid status for assignment: {concern.status}")
+            logger.error(f"[ERROR] Invalid status for assignment: {concern.status}")
             raise ValueError(f"Cannot assign staff to concern slip with status: {concern.status}")
         
-        logger.info(f"[v0] Checking staff member in 'users' collection: {assigned_to}")
+        logger.info(f"[INFO] Checking staff member in 'users' collection: {assigned_to}")
         success, staff_profile, error = await self.db.query_documents("users", [("user_id", "==", assigned_to)])
-        staff_profile = staff_profile[0] if success and staff_profile else None
-        logger.info(f"[v0] Users collection query - success: {success}, profile found: {staff_profile is not None}, error: {error}")
+        staff_profile = staff_profile[0] if success and staff_profile and len(staff_profile) > 0 else None
+        logger.info(f"[INFO] Users collection query - success: {success}, profile found: {staff_profile is not None}, error: {error}")
         
         if staff_profile:
-            logger.info(f"[v0] Staff profile from users: {staff_profile}")
+            logger.info(f"[INFO] Staff profile from users: {staff_profile}")
         
         if not success or not staff_profile:
             # Try user_profiles collection as fallback
-            logger.info(f"[v0] Trying 'user_profiles' collection as fallback")
+            logger.info(f"[INFO] Trying 'user_profiles' collection as fallback")
             success, staff_profile, error = await self.db.get_document("user_profiles", assigned_to)
-            logger.info(f"[v0] User_profiles collection query - success: {success}, profile found: {staff_profile is not None}, error: {error}")
+            logger.info(f"[INFO] User_profiles collection query - success: {success}, profile found: {staff_profile is not None}, error: {error}")
             
             if staff_profile:
-                logger.info(f"[v0] Staff profile from user_profiles: {staff_profile}")
+                logger.info(f"[INFO] Staff profile from user_profiles: {staff_profile}")
         
         if not success or not staff_profile:
-            logger.error(f"[v0] Staff member not found in either collection: {assigned_to}")
+            logger.error(f"[ERROR] Staff member not found in either collection: {assigned_to}")
             raise ValueError(f"Staff member not found: {assigned_to}")
         
         staff_role = staff_profile.get("role")
-        logger.info(f"[v0] Staff role from profile: {staff_role}")
+        logger.info(f"[INFO] Staff role from profile: {staff_role}")
         
         if staff_role != "staff":
             logger.error(f"[v0] User is not a staff member - role: {staff_role}")
             raise ValueError(f"Assigned user must be a staff member (current role: {staff_role})")
         
         logger.info(f"[v0] Staff verification successful - proceeding with assignment")
+
+        internal_id = concern.id
+        logger.info(f"[v0] Using internal concern slip ID for database update: {internal_id}")
         
         update_data = {
             "assigned_to": assigned_to,
@@ -522,7 +547,7 @@ class ConcernSlipService:
         }
         
         logger.info(f"[v0] Updating concern slip with data: {update_data}")
-        success, error = await self.db.update_document("concern_slips", concern_slip_id, update_data)
+        success, error = await self.db.update_document("concern_slips", internal_id, update_data)
         
         if not success:
             logger.error(f"[v0] Failed to update concern slip: {error}")
@@ -532,7 +557,7 @@ class ConcernSlipService:
         
         # Send notification to staff about assignment
         await self.notification_manager.notify_concern_slip_assigned(
-            concern_slip_id=concern_slip_id,
+            concern_slip_id=internal_id,
             title=concern.title,
             staff_id=assigned_to,
             assigned_by=assigned_by,
@@ -541,9 +566,6 @@ class ConcernSlipService:
             location=concern.location
         )
         
-        logger.info(f"[v0] Staff assignment completed successfully")
-        
-        # Get updated concern slip
         return await self.get_concern_slip(concern_slip_id)
 
     async def submit_staff_assessment(
