@@ -335,6 +335,21 @@ class JobServiceService:
                     pass
             return JobService(**enriched_data)
 
+        success, jobs_data, error = await self.db.query_documents("job_services", [("formatted_id", "==", job_service_id)])
+        if success and jobs_data and len(jobs_data) > 0:
+            print(f"[JobServiceService] Found job service by formatted_id in job_services collection")
+            enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            if enriched_data.get("completion_notes"):
+                enriched_data["assessment"] = enriched_data["completion_notes"]
+            if enriched_data.get("assessed_by"):
+                try:
+                    staff_profile = await self.user_service.get_user_profile(enriched_data["assessed_by"])
+                    if staff_profile:
+                        enriched_data["assessed_by_name"] = f"{staff_profile.first_name} {staff_profile.last_name}"
+                except Exception:
+                    pass
+            return JobService(**enriched_data)
+
         # If not found, try job_service_requests collection
         success, jobs_data, error = await self.db.query_documents("job_service_requests", [("id", job_service_id)])
         if success and jobs_data and len(jobs_data) > 0:
@@ -346,6 +361,21 @@ class JobServiceService:
                 enriched_data["assessment"] = enriched_data["completion_notes"]
             if enriched_data.get("assessed_by"):
                 # Get staff name for assessment
+                try:
+                    staff_profile = await self.user_service.get_user_profile(enriched_data["assessed_by"])
+                    if staff_profile:
+                        enriched_data["assessed_by_name"] = f"{staff_profile.first_name} {staff_profile.last_name}"
+                except Exception:
+                    pass
+            return JobService(**enriched_data)
+        
+        success, jobs_data, error = await self.db.query_documents("job_service_requests", [("formatted_id", "==", job_service_id)])
+        if success and jobs_data and len(jobs_data) > 0:
+            print(f"[JobServiceService] Found job service by formatted_id in job_service_requests collection")
+            enriched_data = await self._enrich_job_service_with_user_info(jobs_data[0])
+            if enriched_data.get("completion_notes"):
+                enriched_data["assessment"] = enriched_data["completion_notes"]
+            if enriched_data.get("assessed_by"):
                 try:
                     staff_profile = await self.user_service.get_user_profile(enriched_data["assessed_by"])
                     if staff_profile:

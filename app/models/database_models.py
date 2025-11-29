@@ -619,3 +619,14 @@ class FileAttachment(BaseModel):
     is_active: bool = Field(default=True)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+class BulkApproveRequest(BaseModel):
+    """Request model for bulk approving work order permits"""
+    permit_ids: List[str]  # List of permit IDs to approve
+    conditions: Optional[str] = None  # Optional conditions for approval
+
+
+class BulkRejectRequest(BaseModel):
+    """Request model for bulk rejecting work order permits"""
+    permit_ids: List[str]  # List of permit IDs to reject
+    reason: Optional[str] = None  # Optional reason for rejection
