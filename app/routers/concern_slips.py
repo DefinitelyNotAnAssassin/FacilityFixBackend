@@ -604,6 +604,56 @@ async def return_concern_slip_to_tenant(
             detail=f"Failed to return concern slip to tenant: {str(e)}"
         )
 
+@router.patch("/{concern_slip_id}/complete", response_model=dict)
+async def mark_concern_slip_completed(
+    concern_slip_id: str,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["admin", "tenant"]))
+):
+    """
+    Mark a concern slip as completed.
+    Can be called by tenant after job service/work order is done,
+    or by admin to finalize a concern.
+    """
+    try:
+        from app.database.database_service import DatabaseService
+        
+        db = DatabaseService()
+        
+        # Query for the concern slip
+        success, concerns, error = await db.query_documents(
+            "concern_slips",
+            [("formatted_id", "==", concern_slip_id)] if concern_slip_id.startswith("CS-") else [("id", "==", concern_slip_id)]
+        )
+        
+        if not success or not concerns:
+            raise HTTPException(status_code=404, detail=f"Concern slip not found: {concern_slip_id}")
+        
+        concern_data = concerns[0]
+        doc_id = concern_data.get("_doc_id") or concern_slip_id
+        
+        update_data = {
+            "status": "completed",
+            "completed_at": datetime.utcnow(),
+            "completed_by": current_user["uid"],
+            "updated_at": datetime.utcnow()
+        }
+        
+        success, error = await db.update_document("concern_slips", doc_id, update_data)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to mark concern slip as completed: {error}")
+        
+        return {
+            "success": True,
+            "message": "Concern slip marked as completed",
+            "concern_slip_id": concern_slip_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to complete concern slip: {str(e)}")
+
 @router.get("/tenant/{tenant_id}", response_model=List[ConcernSlip])
 async def get_concern_slips_by_tenant(
     tenant_id: str,

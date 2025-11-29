@@ -110,6 +110,17 @@ class ConcernSlipService:
             location=concern_slip_data['location']
         )
 
+        # Send acknowledgment notification to tenant
+        await self.notification_manager.notify_concern_slip_created_to_tenant(
+            concern_slip_id=concern_slip_id,
+            title=concern_slip_data['title'],
+            tenant_id=reported_by,
+            category=concern_slip_data.get('category', 'uncategorized'),
+            priority=concern_slip_data.get('priority', ''),
+            location=concern_slip_data['location'],
+            description=concern_data.get('description')
+        )
+
         return ConcernSlip(**concern_slip_data)
 
     async def get_concern_slip(self, concern_slip_id: str) -> Optional[ConcernSlip]:
@@ -556,16 +567,38 @@ class ConcernSlipService:
         logger.info(f"[v0] Concern slip updated successfully")
         
         # Send notification to staff about assignment
+        # Convert staff_id to Firebase UID for correct notification routing
+        try:
+            staff_profile = await UserIdService.get_staff_profile_from_staff_id(assigned_to)
+            firebase_uid = staff_profile.id if staff_profile else assigned_to
+            logger.info(f"[v0] Converted staff_id {assigned_to} to Firebase UID {firebase_uid}")
+        except Exception as e:
+            logger.warning(f"[v0] Could not convert staff_id to Firebase UID: {str(e)}, using staff_id directly")
+            firebase_uid = assigned_to
+        
         await self.notification_manager.notify_concern_slip_assigned(
             concern_slip_id=internal_id,
             title=concern.title,
-            staff_id=assigned_to,
+            staff_id=firebase_uid,
             assigned_by=assigned_by,
             category=concern.category,
             priority=concern.priority,
             location=concern.location
         )
         
+        # Also notify the tenant that their concern slip has been assigned
+        await self.notification_manager.notify_concern_slip_assigned_to_tenant(
+            concern_slip_id=concern_slip_id,
+            title=concern.title,
+            reported_by=concern.reported_by,
+            category=concern.category,
+            priority=concern.priority,
+            location=concern.location
+        )
+        
+        logger.info(f"[v0] Staff assignment completed successfully")
+        
+        # Get updated concern slip
         return await self.get_concern_slip(concern_slip_id)
 
     async def submit_staff_assessment(
@@ -618,6 +651,15 @@ class ConcernSlipService:
             concern_slip_id=concern_slip_id,
             title=concern.title,
             staff_id=staff_id.get('staff_id'),
+            assessment=assessment,
+            resolution_type=resolution_type
+        )
+        
+        # Also notify the tenant that their concern slip has been assessed
+        await self.notification_manager.notify_concern_slip_assessment_completed_to_tenant(
+            concern_slip_id=concern_slip_id,
+            title=concern.title,
+            reported_by=concern.reported_by,
             assessment=assessment,
             resolution_type=resolution_type
         )

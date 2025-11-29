@@ -7,6 +7,7 @@ import csv
 
 from pydantic import BaseModel
 from langdetect import detect
+from app.core.scheduler import start_scheduler, stop_scheduler
 
 import torch
 import torch.nn.functional as F
@@ -86,6 +87,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==================== AUTOMATIC ESCALATION SCHEDULER ====================
+@app.on_event("startup")
+async def startup_event():
+    """Start automatic escalation scheduler on app startup"""
+    logger.info("🚀 FastAPI startup event triggered")
+    start_scheduler()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop scheduler on app shutdown"""
+    logger.info("⛔ FastAPI shutdown event triggered")
+    stop_scheduler()
+
+# ==================== END SCHEDULER ====================
 
 def safe_include_router(router_module_path: str, router_name: str = "router"):
     """Safely include a router with error handling"""

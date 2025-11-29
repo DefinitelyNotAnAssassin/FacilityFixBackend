@@ -76,11 +76,13 @@ async def get_staff_members(
                 staff_depts = [single_dept] if single_dept else []
             
             formatted_staff.append({
-                "id": staff.get("id") or staff.get("_doc_id"),
+                "id": staff.get("id") or staff.get("_doc_id"),  # Firebase UID
+                "uid": staff.get("id") or staff.get("_doc_id"),  # Firebase UID (explicit field for clarity)
                 "user_id": staff.get("user_id"),
                 "first_name": staff.get("first_name", ""),
                 "last_name": staff.get("last_name", ""),
                 "email": staff.get("email", ""),
+                "staff_id": staff.get("staff_id", ""),
                 "staff_department": staff.get("staff_department") or staff.get("department"),  # Legacy
                 "staff_departments": staff_depts,  # New multi-select
                 "departments": staff_depts,  # General purpose

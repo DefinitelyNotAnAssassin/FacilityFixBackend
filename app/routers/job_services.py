@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from app.models.database_models import JobService
 from app.services.job_service_service import JobServiceService
+from app.services.schedule_formatter import normalize_schedule_availability
 from app.auth.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/job-services", tags=["job-services"])
@@ -29,6 +30,7 @@ class CreateJobServiceFromConcernRequest(BaseModel):
     priority: Optional[str] = None
     assigned_to: Optional[str] = None
     scheduled_date: Optional[datetime] = None
+    schedule_availability: Optional[str] = None
     estimated_hours: Optional[float] = None
     additional_notes: Optional[str] = None
 
@@ -76,7 +78,7 @@ async def _create_job_service_logic(
         "status": "pending",
         "request_type": "Job Service",
         "unit_id": request.unit_id,
-        "schedule_availability": request.schedule_availability,
+        "schedule_availability": normalize_schedule_availability(request.schedule_availability),
         "start_time": request.start_time.isoformat() if request.start_time else None,
         "end_time": request.end_time.isoformat() if request.end_time else None,
         "attachments": request.attachments or [],
@@ -144,6 +146,11 @@ async def create_job_service_from_concern(
         from app.services.job_service_id_service import job_service_id_service
 
         job_data = request.dict(exclude_unset=True)
+        
+        # Normalize schedule_availability if present
+        if job_data.get("schedule_availability"):
+            job_data["schedule_availability"] = normalize_schedule_availability(job_data["schedule_availability"])
+        
         # Generate a formatted job service id (JS-YYYY-NNNNN) and attach it to the payload
         try:
             formatted_id = await job_service_id_service.generate_job_service_id()
@@ -243,8 +250,10 @@ async def get_job_service(
         job_service = await service.get_job_service(job_service_id)
         if not job_service:
             raise HTTPException(status_code=404, detail="Job service not found")
-        # Return as dict to include enriched fields
-        return job_service.model_dump() if hasattr(job_service, 'model_dump') else job_service
+        
+        # Result is now a dict, return it directly
+        print(f"[DEBUG] API Response schedule_availability: {job_service.get('schedule_availability')} (type: {type(job_service.get('schedule_availability'))})")
+        return job_service
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get job service: {str(e)}")
 
@@ -563,6 +572,48 @@ async def submit_completion_assessment(
                 }, validate=False)
             except Exception as e:
                 print(f"Failed to update concern slip status: {e}")
+        
+        # Send completion notification to admin and tenant
+        try:
+            from app.services.notification_manager import notification_manager
+            
+            job_title = job_data.get("title", "Job Service")
+            created_by = job_data.get("created_by") or job_data.get("requested_by")
+            
+            print(f"[Job Service Completion] job_title: {job_title}, created_by: {created_by}")
+            
+            if not created_by:
+                print(f"[Job Service Completion] No tenant ID found in job data. Available keys: {list(job_data.keys())}")
+            
+            # Get admin users using notification_manager's method
+            try:
+                admin_users = await notification_manager._get_users_by_role("admin")
+                print(f"[Job Service Completion] Found {len(admin_users) if admin_users else 0} admin users")
+                admin_id = admin_users[0]["id"] if admin_users else None
+            except Exception as e:
+                print(f"[Job Service Completion] Error getting admin users: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                admin_id = None
+            
+            if admin_id and created_by:
+                print(f"[Job Service Completion] Calling notify_job_service_completed with staff_id={current_user['uid']}, tenant_id={created_by}, admin_id={admin_id}")
+                result = await notification_manager.notify_job_service_completed(
+                    job_service_id=job_service_id,
+                    staff_id=current_user["uid"],
+                    tenant_id=created_by,
+                    admin_id=admin_id,
+                    title=job_title,
+                    completion_notes=request.assessment
+                )
+                print(f"[Job Service Completion] Notification result: {result}")
+                print(f"[Job Service Completion] Sent notifications for job service {job_service_id}")
+            else:
+                print(f"[Job Service Completion] Missing admin_id={admin_id} or created_by={created_by}")
+        except Exception as e:
+            print(f"[Job Service Completion] Error sending notifications: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         return {
             "success": True,
