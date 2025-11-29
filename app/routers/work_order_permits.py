@@ -2,8 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
-from app.models.database_models import WorkOrderPermit
 from app.services.work_order_permit_service import WorkOrderPermitService
+from app.models.database_models import WorkOrderPermit, BulkApproveRequest, BulkRejectRequest
 from app.auth.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/work-order-permits", tags=["work-order-permits"])
@@ -40,6 +40,9 @@ class DenyPermitRequest(BaseModel):
 class UpdatePermitStatusRequest(BaseModel):
     status: str
     notes: Optional[str] = None
+
+class CompleteWorkOrderRequest(BaseModel):
+    completion_notes: Optional[str] = None
 
 async def _create_work_order_permit_logic(
     request: CreateWorkOrderPermitRequest,
@@ -168,6 +171,86 @@ async def create_work_order_permit_from_concern(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create work order permit: {str(e)}")
 
+# Bulk approve endpoint - MUST come before /{permit_id}/... routes
+@router.patch("/bulk/approve", response_model=dict)
+async def bulk_approve_permits(
+    request: BulkApproveRequest,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["admin"]))
+):
+    """Bulk approve multiple work order permits (Admin only)"""
+    print(f"[Bulk Approve] Received request from {current_user.get('uid')}")
+    print(f"[Bulk Approve] Permit IDs: {request.permit_ids}")
+    print(f"[Bulk Approve] Conditions: {request.conditions}")
+    
+    try:
+        if not request.permit_ids or len(request.permit_ids) == 0:
+            print("[Bulk Approve] ERROR: No permits provided")
+            raise HTTPException(status_code=400, detail="No permits provided for approval")
+        
+        service = WorkOrderPermitService()
+        print(f"[Bulk Approve] Calling service for {len(request.permit_ids)} permits")
+        
+        result = await service.bulk_approve_permits(
+            permit_ids=request.permit_ids,
+            approved_by=current_user["uid"],
+            conditions=request.conditions
+        )
+        
+        print(f"[Bulk Approve] Result: {result}")
+        return result
+        
+    except ValueError as e:
+        print(f"[Bulk Approve] ValueError: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"[Bulk Approve] Exception: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to bulk approve permits: {str(e)}")
+
+# Bulk reject endpoint - MUST come before /{permit_id}/... routes
+@router.patch("/bulk/reject", response_model=dict)
+async def bulk_reject_permits(
+    request: BulkRejectRequest,
+    current_user: dict = Depends(get_current_user),
+    _: None = Depends(require_role(["admin"]))
+):
+    """Bulk reject multiple work order permits (Admin only)"""
+    print(f"[Bulk Reject] Received request from {current_user.get('uid')}")
+    print(f"[Bulk Reject] Permit IDs: {request.permit_ids}")
+    print(f"[Bulk Reject] Reason: {request.reason}")
+    
+    try:
+        if not request.permit_ids or len(request.permit_ids) == 0:
+            print("[Bulk Reject] ERROR: No permits provided")
+            raise HTTPException(status_code=400, detail="No permits provided for rejection")
+        
+        if not request.reason or len(request.reason.strip()) == 0:
+            print("[Bulk Reject] ERROR: Rejection reason is required")
+            raise HTTPException(status_code=400, detail="Rejection reason is required")
+        
+        service = WorkOrderPermitService()
+        print(f"[Bulk Reject] Calling service for {len(request.permit_ids)} permits")
+        
+        result = await service.bulk_reject_permits(
+            permit_ids=request.permit_ids,
+            rejected_by=current_user["uid"],
+            reason=request.reason
+        )
+        
+        print(f"[Bulk Reject] Result: {result}")
+        return result
+        
+    except ValueError as e:
+        print(f"[Bulk Reject] ValueError: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"[Bulk Reject] Exception: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to bulk reject permits: {str(e)}")
+
 @router.patch("/{permit_id}/approve", response_model=WorkOrderPermit)
 async def approve_permit(
     permit_id: str,
@@ -188,7 +271,6 @@ async def approve_permit(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to approve permit: {str(e)}")
-
 
 @router.patch("/{permit_id}/approved", response_model=WorkOrderPermit)
 async def approve_permit_alias(
@@ -232,7 +314,6 @@ async def deny_permit(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to deny permit: {str(e)}")
 
-
 @router.patch("/{permit_id}/rejected", response_model=WorkOrderPermit)
 async def reject_permit_alias(
     permit_id: str,
@@ -243,17 +324,19 @@ async def reject_permit_alias(
     """Alias endpoint for clients that call '/rejected' instead of '/deny'"""
     try:
         service = WorkOrderPermitService()
-        permit = await service.deny_permit(
+        # Use update_permit_status to set a specific status and attach notes
+        notes = request.reason if request and getattr(request, 'reason', None) else None
+        permit = await service.update_permit_status(
             permit_id=permit_id,
-            denied_by=current_user["uid"],
-            reason=request.reason
+            status="returned_to_tenant",
+            updated_by=current_user["uid"],
+            notes=notes
         )
         return permit
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reject permit: {str(e)}")
-
 
 @router.patch("/{permit_id}/returned", response_model=WorkOrderPermit)
 async def return_permit_to_tenant(
@@ -391,9 +474,6 @@ async def get_pending_permits(
         return permits
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get pending permits: {str(e)}")
-
-class CompleteWorkOrderRequest(BaseModel):
-    completion_notes: Optional[str] = None
 
 @router.patch("/{work_order_id}/complete", response_model=dict)
 async def complete_work_order_request(
@@ -584,7 +664,6 @@ async def get_work_order_attachment_url(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get attachment URL: {str(e)}")
 
-
 @router.delete("/{permit_id}")
 async def delete_work_order_permit(
     permit_id: str,
@@ -629,7 +708,6 @@ async def delete_work_order_permit(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete work order permit: {str(e)}")
-
 
 @router.delete("/{permit_id}/attachments/{file_id}")
 async def delete_work_order_attachment(

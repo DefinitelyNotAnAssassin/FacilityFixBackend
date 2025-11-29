@@ -405,3 +405,154 @@ class WorkOrderPermitService:
             related_entity_type="work_order_permit",
             related_entity_id=permit_id
         )
+
+    async def bulk_approve_permits(self, permit_ids: List[str], approved_by: str, conditions: Optional[str] = None) -> dict:
+        """Approve multiple work order permits in bulk (Admin only)"""
+        
+        # Verify approver is admin
+        approver_profile = await self.user_service.get_user_profile(approved_by)
+        if not approver_profile or approver_profile.role != "admin":
+            raise ValueError("Only admins can approve work order permits")
+
+        approved_count = 0
+        failed_count = 0
+        errors = []
+        failed_permits = []
+
+        for permit_id in permit_ids:
+            try:
+                # Get permit data
+                success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
+                if not success or not permits_data or len(permits_data) == 0:
+                    failed_count += 1
+                    errors.append(f"Permit {permit_id}: Not found")
+                    failed_permits.append(permit_id)
+                    continue
+
+                permit_data = permits_data[0]
+                
+                # Get the Firestore document ID from the query result
+                doc_id = permit_data.get("_doc_id") or permit_id
+                
+                # Check if permit is in a valid state to approve
+                current_status = permit_data.get("status")
+                if current_status not in ["pending", "returned_to_tenant"]:
+                    failed_count += 1
+                    errors.append(f"Permit {permit_id}: Cannot approve permit with status '{current_status}'")
+                    failed_permits.append(permit_id)
+                    continue
+                
+                update_data = {
+                    "status": "approved",
+                    "approved_by": approved_by,
+                    "approval_date": datetime.utcnow(),
+                    "permit_conditions": conditions,
+                    "updated_at": datetime.utcnow()
+                }
+
+                success, error = await self._update_permit_by_doc_id(doc_id, update_data)
+                if not success:
+                    failed_count += 1
+                    errors.append(f"Permit {permit_id}: {error}")
+                    failed_permits.append(permit_id)
+                    continue
+                
+                # Notify requester about approval
+                await notification_manager.notify_permit_approved(
+                    permit_id=permit_id,
+                    requester_id=permit_data.get("requested_by"),
+                    assignee_id=None,
+                    approved_by=approved_by,
+                    contractor_name=permit_data.get("contractor_name", ""),
+                    conditions=conditions
+                )
+
+                approved_count += 1
+
+            except Exception as e:
+                failed_count += 1
+                errors.append(f"Permit {permit_id}: {str(e)}")
+                failed_permits.append(permit_id)
+
+        return {
+            "approved_count": approved_count,
+            "failed_count": failed_count,
+            "errors": errors,
+            "failed_permits": failed_permits,
+            "message": f"Bulk approval completed: {approved_count} approved, {failed_count} failed"
+        }
+
+    async def bulk_reject_permits(self, permit_ids: List[str], rejected_by: str, reason: str) -> dict:
+        """Reject multiple work order permits in bulk (Admin only)"""
+        
+        # Verify rejector is admin
+        rejector_profile = await self.user_service.get_user_profile(rejected_by)
+        if not rejector_profile or rejector_profile.role != "admin":
+            raise ValueError("Only admins can reject work order permits")
+
+        rejected_count = 0
+        failed_count = 0
+        errors = []
+        failed_permits = []
+
+        for permit_id in permit_ids:
+            try:
+                # Get permit data
+                success, permits_data, error = await self.db.query_documents("work_order_permits", [("id", "==", permit_id)])
+                if not success or not permits_data or len(permits_data) == 0:
+                    failed_count += 1
+                    errors.append(f"Permit {permit_id}: Not found")
+                    failed_permits.append(permit_id)
+                    continue
+
+                permit_data = permits_data[0]
+                
+                # Get the Firestore document ID from the query result
+                doc_id = permit_data.get("_doc_id") or permit_id
+                
+                # Check if permit is in a valid state to reject
+                current_status = permit_data.get("status")
+                if current_status not in ["pending", "returned_to_tenant"]:
+                    failed_count += 1
+                    errors.append(f"Permit {permit_id}: Cannot reject permit with status '{current_status}'")
+                    failed_permits.append(permit_id)
+                    continue
+                
+                update_data = {
+                    "status": "rejected",
+                    "rejected_by": rejected_by,
+                    "rejection_date": datetime.utcnow(),
+                    "rejection_reason": reason,
+                    "updated_at": datetime.utcnow()
+                }
+
+                success, error = await self._update_permit_by_doc_id(doc_id, update_data)
+                if not success:
+                    failed_count += 1
+                    errors.append(f"Permit {permit_id}: {error}")
+                    failed_permits.append(permit_id)
+                    continue
+                
+                # Notify requester about rejection
+                await notification_manager.notify_permit_rejected(
+                    permit_id=permit_id,
+                    requester_id=permit_data.get("requested_by"),
+                    rejected_by=rejected_by,
+                    reason=reason,
+                    contractor_name=permit_data.get("contractor_name", "")
+                )
+
+                rejected_count += 1
+
+            except Exception as e:
+                failed_count += 1
+                errors.append(f"Permit {permit_id}: {str(e)}")
+                failed_permits.append(permit_id)
+
+        return {
+            "rejected_count": rejected_count,
+            "failed_count": failed_count,
+            "errors": errors,
+            "failed_permits": failed_permits,
+            "message": f"Bulk rejection completed: {rejected_count} rejected, {failed_count} failed"
+        }
