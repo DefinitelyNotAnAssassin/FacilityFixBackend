@@ -8,6 +8,7 @@ COLLECTIONS = {
     'inventory': 'inventory',
     'inventory_transactions': 'inventory_transactions',
     'inventory_requests': 'inventory_requests',
+    'inventory_reservations': 'inventory_reservations',
     'low_stock_alerts': 'low_stock_alerts',
     'inventory_usage_analytics': 'inventory_usage_analytics',
     'concern_slips': 'concern_slips',
@@ -27,6 +28,7 @@ COLLECTIONS = {
     'counters': 'counters',
     'chat_rooms': 'chat_rooms',
     'chat_messages': 'chat_messages',
+    'password_reset_otps': 'password_reset_otps',
 }
 
 # Collection Structure Documentation
@@ -70,6 +72,11 @@ COLLECTION_SCHEMAS = {
         'fields': ['inventory_id', 'requested_by', 'approved_by', 'quantity_requested', 'quantity_approved', 'purpose', 'reference_id', 'priority', 'status', 'justification'],
         'required': ['inventory_id', 'requested_by', 'quantity_requested', 'purpose'],
         'indexes': ['inventory_id', 'requested_by', 'approved_by', 'status', 'priority', 'created_at']
+    },
+    'inventory_reservations': {
+        'fields': ['inventory_id', 'created_by', 'maintenance_task_id', 'quantity', 'status', 'reserved_at', 'released_at', 'created_at', 'updated_at'],
+        'required': ['inventory_id', 'created_by', 'maintenance_task_id', 'quantity', 'status'],
+        'indexes': ['inventory_id', 'created_by', 'maintenance_task_id', 'status', 'reserved_at', 'created_at']
     },
     'low_stock_alerts': {
         'fields': ['inventory_id', 'building_id', 'item_name', 'current_stock', 'reorder_level', 'alert_level', 'status', 'acknowledged_by'],
@@ -165,5 +172,10 @@ COLLECTION_SCHEMAS = {
         'fields': ['room_id', 'sender_id', 'sender_name', 'sender_role', 'message_text', 'message_type', 'attachments', 'is_read', 'read_by', 'is_deleted'],
         'required': ['room_id', 'sender_id', 'sender_name', 'sender_role', 'message_text'],
         'indexes': ['room_id', 'sender_id', 'created_at', 'is_read']
+    },
+    'password_reset_otps': {
+        'fields': ['email', 'otp', 'uid', 'expires_at', 'used', 'used_at', 'created_at'],
+        'required': ['email', 'otp', 'uid', 'expires_at'],
+        'indexes': ['email', 'otp', 'expires_at', 'used']
     },
 }

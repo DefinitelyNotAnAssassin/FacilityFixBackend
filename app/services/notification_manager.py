@@ -1627,5 +1627,144 @@ class NotificationManager:
             logger.error(f"Error sending concern slip return notification: {str(e)}")
 
 
+    async def notify_maintenance_task_assigned(
+        self,
+        task_id: str,
+        task_title: str,
+        assignee_id: str,
+        assigned_by: str,
+        location: str,
+        scheduled_date: Optional[datetime] = None,
+        priority: str = "medium"
+    ) -> bool:
+        """Notify staff when a maintenance task is assigned to them"""
+        try:
+            # Get assignee details
+            assignee = await self._get_user_details(assignee_id)
+            assignee_name = f"{assignee.get('first_name', '')} {assignee.get('last_name', '')}".strip()
+
+            # Get assigner details
+            assigner = await self._get_user_details(assigned_by)
+            assigner_name = f"{assigner.get('first_name', '')} {assigner.get('last_name', '')}".strip()
+
+            schedule_text = ""
+            if scheduled_date:
+                schedule_text = f" Scheduled for {scheduled_date.strftime('%Y-%m-%d %H:%M')}."
+
+            priority_text = f" Priority: {priority.title()}."
+
+            await self.create_notification(
+                notification_type=NotificationType.MAINTENANCE_TASK_ASSIGNED,
+                recipient_id=assignee_id,
+                title="Maintenance Task Assigned",
+                message=f"You have been assigned maintenance task '{task_title}' at {location}.{schedule_text}{priority_text}",
+                sender_id=assigned_by,
+                related_entity_type="maintenance_task",
+                related_entity_id=task_id,
+                priority=NotificationPriority.HIGH if priority in ["high", "critical"] else NotificationPriority.MEDIUM,
+                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
+                action_url=f"/maintenance/{task_id}",
+                action_label="View Task Details",
+                requires_action=True,
+                custom_data={
+                    "task_id": task_id,
+                    "task_title": task_title,
+                    "location": location,
+                    "scheduled_date": scheduled_date.isoformat() if scheduled_date else None,
+                    "priority": priority,
+                    "assigned_by": assigner_name
+                },
+                expires_at=datetime.utcnow() + timedelta(days=7)
+            )
+
+            logger.info(f"Sent maintenance task assignment notification to {assignee_name} ({assignee_id}) for task {task_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error sending maintenance task assignment notification: {str(e)}")
+            return False
+
+    async def notify_inventory_replacement_requested(
+        self,
+        request_id: str,
+        item_name: str,
+        quantity: int,
+        reason: str,
+        maintenance_task_id: str
+    ) -> bool:
+        """Notify admins when staff requests replacement for defective inventory item"""
+        try:
+            # Get all admin users
+            admin_ids = await self._get_admin_user_ids()
+
+            if not admin_ids:
+                logger.warning("No admin users found to notify about replacement request")
+                return False
+
+            # Get maintenance task details for context
+            task_title = "Unknown Task"
+            try:
+                from ..services.maintenance_task_service import maintenance_task_service
+                task = await maintenance_task_service.get_task(maintenance_task_id)
+                if task:
+                    task_title = task.task_title
+            except Exception as task_error:
+                logger.warning(f"Could not get task details for {maintenance_task_id}: {task_error}")
+
+            title = "Inventory Replacement Requested"
+            message = f"Staff has requested replacement for '{item_name}' (Qty: {quantity}). Reason: {reason}. Task: {task_title}"
+
+            # Notify all admins
+            for admin_id in admin_ids:
+                await self.create_notification(
+                    notification_type=NotificationType.INVENTORY_REPLACEMENT_REQUESTED,
+                    recipient_id=admin_id,
+                    title=title,
+                    message=message,
+                    related_entity_type="inventory_request",
+                    related_entity_id=request_id,
+                    priority=NotificationPriority.HIGH,
+                    channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
+                    action_url=f"/inventory/requests/{request_id}",
+                    action_label="Review Request",
+                    requires_action=True,
+                    custom_data={
+                        "request_id": request_id,
+                        "item_name": item_name,
+                        "quantity": quantity,
+                        "reason": reason,
+                        "maintenance_task_id": maintenance_task_id,
+                        "task_title": task_title
+                    },
+                    expires_at=datetime.utcnow() + timedelta(days=3)
+                )
+
+            logger.info(f"Sent inventory replacement request notifications to {len(admin_ids)} admins for request {request_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error sending inventory replacement request notification: {str(e)}")
+            return False
+
+    async def _get_admin_user_ids(self) -> List[str]:
+        """Get all admin user IDs for notifications"""
+        try:
+            # Query users collection for admin role
+            success, users, error = await self.db.query_documents(
+                COLLECTIONS['users'],
+                [('role', '==', 'admin')]
+            )
+
+            if success and users:
+                return [user.get('_doc_id') or user.get('id') for user in users if user.get('_doc_id') or user.get('id')]
+            else:
+                logger.warning(f"Could not get admin users: {error}")
+                return []
+
+        except Exception as e:
+            logger.error(f"Error getting admin user IDs: {str(e)}")
+            return []
+
+
 # Create global notification manager instance
 notification_manager = NotificationManager()

@@ -6,3 +6,4 @@ __pycache__/
 .app/models/facilityfix-ai
 app/models/facilityfix-ai
 venv/
+firebase-service-account*.json

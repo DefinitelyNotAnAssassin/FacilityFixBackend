@@ -249,6 +249,37 @@ class MaintenanceTaskService:
             "admin_notes": payload.get("admin_notes") or "",
         }
 
+        # If this is an external task, ensure contact fields are set from common payload keys
+        if task_type == "external":
+            # prefer explicit contact fields, then contractor_ variants, then payload email
+            contact_name = (
+                payload.get("contact_name")
+                or payload.get("contractor_name")
+                or payload.get("contractorName")
+                or payload.get("contactName")
+            )
+            contact_number = (
+                payload.get("contact_number")
+                or payload.get("contactNumber")
+                or payload.get("contractor_contact")
+                or payload.get("contractorContact")
+            )
+            contact_email = (
+                payload.get("email")
+                or payload.get("contact_email")
+                or payload.get("contactEmail")
+                or payload.get("contractor_email")
+                or payload.get("contractorEmail")
+                or payload.get("contactEmail")
+            )
+
+            if contact_name:
+                data["contact_name"] = contact_name
+            if contact_number:
+                data["contact_number"] = contact_number
+            if contact_email:
+                data["email"] = contact_email
+
         normalized = self._normalize_document(data)
         task = MaintenanceTask(**normalized)
 
@@ -543,7 +574,7 @@ class MaintenanceTaskService:
                 normalized['scheduled_date'] = datetime.utcnow() + timedelta(days=1)
         
         # Handle datetime fields
-        datetime_fields = ['created_at', 'updated_at', 'started_at', 'completed_at', 'next_occurrence']
+        datetime_fields = ['created_at', 'updated_at', 'started_at', 'completed_at', 'next_occurrence', 'assessment_date']
         for field in datetime_fields:
             if field in normalized and isinstance(normalized[field], str):
                 try:
@@ -553,6 +584,25 @@ class MaintenanceTaskService:
                         normalized[field] = datetime.utcnow()
                     else:
                         normalized[field] = None
+
+        # Normalize common contractor/contact field variations so external tasks
+        # consistently expose `contact_name`, `contact_number`, and `email`.
+        contact_mappings = {
+            'contractorName': 'contact_name',
+            'contractor_name': 'contact_name',
+            'contactName': 'contact_name',
+            'contractorContact': 'contact_number',
+            'contractor_contact': 'contact_number',
+            'contactNumber': 'contact_number',
+            'contact_number': 'contact_number',
+            'contactEmail': 'email',
+            'contact_email': 'email',
+            'contractorEmail': 'email',
+            'contractor_email': 'email',
+        }
+        for old_key, new_key in contact_mappings.items():
+            if old_key in normalized and new_key not in normalized:
+                normalized[new_key] = normalized.pop(old_key)
         
         return normalized
 
@@ -563,6 +613,7 @@ class MaintenanceTaskService:
             "started_at",
             "completed_at",
             "next_occurrence",
+            "assessment_date",
             "created_at",
             "updated_at",
         ):

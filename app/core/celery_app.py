@@ -11,7 +11,8 @@ celery_app = Celery(
         "app.tasks.inventory_tasks",
         "app.tasks.analytics_tasks",
         "app.tasks.notification_tasks",
-        "app.tasks.maintenance_tasks"  # Including new maintenance tasks module
+        "app.tasks.maintenance_tasks",
+        "app.tasks.auth_tasks"  # Added for password reset OTP cleanup
     ]
 )
 
@@ -85,6 +86,11 @@ celery_app.conf.beat_schedule = {
     'send-maintenance-reminders': {
         'task': 'app.tasks.notification_tasks.send_scheduled_maintenance_reminders',
         'schedule': 86400.0,  # Daily
+    },
+    # Clean up expired password reset OTPs
+    'cleanup-expired-password-reset-otps': {
+        'task': 'app.tasks.auth_tasks.cleanup_expired_password_reset_otps',
+        'schedule': 3600.0,  # Every hour
     },
 }
 

@@ -48,6 +48,7 @@ class NotificationType(str, Enum):
     INVENTORY_REQUEST_SUBMITTED = "inventory_request_submitted"
     INVENTORY_REQUEST_REJECTED = "inventory_request_rejected"
     INVENTORY_REQUEST_READY = "inventory_request_ready"
+    INVENTORY_REPLACEMENT_REQUESTED = "inventory_replacement_requested"
     
     # Announcements
     ANNOUNCEMENT_PUBLISHED = "announcement_published"

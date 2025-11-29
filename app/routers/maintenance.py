@@ -11,6 +11,7 @@ from app.models.database_models import MaintenanceTask
 from app.services.maintenance_task_service import maintenance_task_service
 from app.services.special_maintenance_service import special_maintenance_service
 from app.services.user_id_service import UserIdService, user_id_service
+from app.services.notification_manager import notification_manager
 from app.database.collections import COLLECTIONS
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ def _compute_next_due_date(start_date: datetime, recurrence_type: str) -> Option
         else:
             # Parse numeric recurrence string (e.g., "Every 1 month", "2 weeks", "3 months")
             # Make "every" optional to support both "Every 3 months" and "3 months" formats
-            pattern = r"(?:every\s+)?(\d+)\s+(day|days|week|weeks|month|months|year|years)"
+            pattern = r"(?:every\s+)?(\d+)\s+(week|weeks|month|months|year|years)"
             match = re.search(pattern, recurrence_lower)
 
             if not match:
@@ -131,9 +132,9 @@ class MaintenanceTaskCreate(BaseModel):
     feedback_notes: Optional[str] = None
     status: Optional[str] = None
     
-    # External maintenance contractor fields
-    contractor_name: Optional[str] = None
-    contact_email: Optional[str] = None
+    # External maintenance contractor fields (canonical names)
+    contact_name: Optional[str] = None
+    email: Optional[str] = None
     contact_number: Optional[str] = None
     service_category: Optional[str] = None
     department: Optional[str] = None
@@ -145,11 +146,13 @@ class MaintenanceTaskCreate(BaseModel):
     
     # Assessment and tracking fields
     assessment_received: Optional[str] = None
+    assessment_date: Optional[datetime] = None
     logged_by: Optional[str] = None
     logged_date: Optional[str] = None
     assessment: Optional[str] = None
     recommendation: Optional[str] = None
     admin_notification: Optional[str] = None
+    
     # Notes for admins to attach to a task
     admin_notes: Optional[str] = None
     
@@ -190,15 +193,16 @@ class MaintenanceTaskUpdate(BaseModel):
     completion_notes: Optional[str] = None
     actual_duration: Optional[int] = Field(default=None, ge=0)
     
-    # External maintenance contractor fields
-    contractor_name: Optional[str] = None
-    contact_email: Optional[str] = None
+    # External maintenance contractor fields (canonical names)
+    contact_name: Optional[str] = None
+    email: Optional[str] = None
     contact_number: Optional[str] = None
     service_category: Optional[str] = None
     department: Optional[str] = None
     
     # Assessment and tracking fields
     assessment_received: Optional[str] = None
+    assessment_date: Optional[datetime] = None
     logged_by: Optional[str] = None
     logged_date: Optional[str] = None
     assessment: Optional[str] = None
@@ -246,6 +250,7 @@ async def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
         "started_at",
         "completed_at",
         "next_occurrence",
+        "assessment_date",
         "created_at",
         "updated_at",
     ):
@@ -553,6 +558,22 @@ async def update_maintenance_task(
 
         if not updated:
             raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        # Send notification if task was assigned to staff
+        if "assigned_to" in update_dict and update_dict["assigned_to"]:
+            try:
+                await notification_manager.notify_maintenance_task_assigned(
+                    task_id=task_id,
+                    assigned_to=update_dict["assigned_to"],
+                    assigned_by=current_user.get("uid"),
+                    task_title=getattr(updated, "title", "Maintenance Task"),
+                    task_description=getattr(updated, "description", ""),
+                    scheduled_date=getattr(updated, "scheduled_date", None),
+                )
+                logger.info(f"Notification sent for maintenance task {task_id} assigned to {update_dict['assigned_to']}")
+            except Exception as exc:
+                logger.error(f"Failed to send notification for task assignment {task_id}: {exc}")
+                # Don't fail the update if notification fails
 
         return {
             "success": True,
