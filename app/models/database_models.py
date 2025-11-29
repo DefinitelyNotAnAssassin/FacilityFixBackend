@@ -26,16 +26,23 @@ class Unit(BaseModel):
 # Equipment Model
 class Equipment(BaseModel):
     id: Optional[str] = None
+    formatted_id: Optional[str] = None
     building_id: str
     equipment_name: str
-    equipment_type: str  # HVAC, elevator, fire_safety, etc.
+    asset_tag: Optional[str] = None  # Asset tag / barcode
+    manufacturer: Optional[str] = None
+    equipment_type: str  # e.g., fan_coil, pump, elevator, etc.
+    category: Optional[str] = None  # HVAC, Plumbing, Electrical, Masonry, Carpentry, Other
     model_number: Optional[str] = None
     serial_number: Optional[str] = None
-    location: str
+    location: str  # e.g., Lobby, Gym, Parking area, etc.
     department: Optional[str] = None
-    status: str 
+    status: str  # Operational, Needs Maintenance, Under Repair, Out of Service
+    acquisition_date: Optional[datetime] = None
+    installation_date: Optional[datetime] = None
     is_critical: bool = Field(default=False)
-    date_added: Optional[datetime] = None
+    is_active: bool = Field(default=True)
+    created_by: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -189,7 +196,7 @@ class ConcernSlip(BaseModel):
     updated_at: Optional[datetime] = None
     
 
-# JobService Model (modified from WorkOrder)
+# JobService Model 
 class JobService(BaseModel):
     id: Optional[str] = None
     formatted_id: Optional[str] = None

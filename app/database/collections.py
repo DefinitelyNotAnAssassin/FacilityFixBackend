@@ -54,9 +54,9 @@ COLLECTION_SCHEMAS = {
         'indexes': ['role', 'building_id', 'status']
     },
     'equipment': {
-        'fields': ['building_id', 'equipment_name', 'equipment_type', 'location', 'status', 'is_critical'],
+        'fields': ['building_id', 'equipment_name', 'equipment_type', 'location', 'status', 'is_critical', 'formatted_id', 'created_by'],
         'required': ['building_id', 'equipment_name', 'equipment_type', 'location'],
-        'indexes': ['building_id', 'equipment_type', 'status']
+        'indexes': ['building_id', 'equipment_type', 'status', 'formatted_id']
     },
     'inventory': {
         'fields': ['building_id', 'item_name', 'item_code', 'department', 'classification', 'category', 'current_stock', 'reorder_level', 'max_stock_level', 'unit_of_measure', 'unit_cost', 'supplier_name', 'storage_location', 'is_critical', 'is_active'],
