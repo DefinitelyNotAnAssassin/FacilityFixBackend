@@ -144,7 +144,7 @@ routers_to_load = [
     ("app.routers.maintenance", "Maintenance"),
     ("app.routers.chat", "Chat"),
     ("app.routers.attachments", "Attachments"),
-    # ("app.routers.attachments", "Attachments"), # Deprecated in favor of file_storage
+    ("app.routers.staff_scheduling", "Staff Scheduling"),
 ]
 
 successful_routers = []

@@ -68,7 +68,15 @@ class FirestoreClient:
             query = self.db.collection(collection)
             
             if filters:
-                for field, operator, value in filters:
+                for f in filters:
+                    if len(f) == 3:
+                        field, operator, value = f
+                    elif len(f) == 2:
+                        field, value = f
+                        operator = "=="
+                    else:
+                        raise ValueError(f"Invalid filter tuple format: {f}. Expected (field, value) or (field, operator, value)")
+                    
                     query = query.where(field, operator, value)
             
             if limit:
