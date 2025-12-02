@@ -6,6 +6,9 @@ from app.models.database_models import (
     ConcernSlip, JobService, WorkOrderPermit, MaintenanceTask, Announcement,
     StatusHistory, Feedback, Counter, Notification, FileAttachment
 )
+from app.models.staff_scheduling_models import (
+    StaffAvailability, StaffRealTimeStatus, DayOffRequest
+)
 
 class SchemaValidator:
     """Validates Firestore documents against defined schemas"""
@@ -30,7 +33,10 @@ class SchemaValidator:
         'status_history': StatusHistory,
         'feedback': Feedback,
         'file_attachments': FileAttachment,
-        'counters': Counter
+        'counters': Counter,
+        'staff_availability': StaffAvailability,
+        'staff_real_time_status': StaffRealTimeStatus,
+        'day_off_requests': DayOffRequest,
     }
     
     @classmethod

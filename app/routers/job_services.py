@@ -54,16 +54,13 @@ async def _create_job_service_logic(
 ) -> dict:
     """Shared logic for creating job service requests"""
     from app.database.database_service import DatabaseService
+    from app.services.job_service_id_service import job_service_id_service
     import uuid
     
     db = DatabaseService()
     job_service_id = f"js_{str(uuid.uuid4())[:8]}"
     
-    # Generate formatted ID
-    now = datetime.utcnow()
-    year = now.year
-    day_of_year = now.timetuple().tm_yday
-    formatted_id = f"JS-{year}-{str(day_of_year).zfill(5)}"
+    formatted_id = await job_service_id_service.generate_job_service_id()
     
     job_service_data = {
         "id": job_service_id,
@@ -82,9 +79,9 @@ async def _create_job_service_logic(
         "start_time": request.start_time.isoformat() if request.start_time else None,
         "end_time": request.end_time.isoformat() if request.end_time else None,
         "attachments": request.attachments or [],
-        "created_at": now,
-        "updated_at": now,
-        "submitted_at": now.isoformat()
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "submitted_at": datetime.utcnow().isoformat()
     }
     
     # Store in dedicated job_service_requests collection
@@ -329,15 +326,13 @@ async def get_next_job_service_id(
 ):
     """Get next available job service ID"""
     try:
-        now = datetime.utcnow()
-        year = now.year
-        day_of_year = now.timetuple().tm_yday
-        next_id = f"JS-{year}-{str(day_of_year).zfill(5)}"
+        from app.services.job_service_id_service import job_service_id_service
+        
+        formatted_id = await job_service_id_service.generate_job_service_id()
         
         return {
-            "next_id": next_id,
-            "year": year,
-            "sequence": day_of_year
+            "next_id": formatted_id,
+            "message": "Next job service ID generated successfully"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate next ID: {str(e)}")

@@ -29,6 +29,10 @@ COLLECTIONS = {
     'chat_rooms': 'chat_rooms',
     'chat_messages': 'chat_messages',
     'password_reset_otps': 'password_reset_otps',
+    # Staff Scheduling Collections
+    'staff_availability': 'staff_availability',
+    'staff_real_time_status': 'staff_real_time_status',
+    'day_off_requests': 'day_off_requests',
 }
 
 # Collection Structure Documentation
@@ -177,5 +181,21 @@ COLLECTION_SCHEMAS = {
         'fields': ['email', 'otp', 'uid', 'expires_at', 'used', 'used_at', 'created_at'],
         'required': ['email', 'otp', 'uid', 'expires_at'],
         'indexes': ['email', 'otp', 'expires_at', 'used']
+    },
+    # Staff Scheduling Collections
+    'staff_availability': {
+        'fields': ['staff_id', 'week_start_date', 'week_end_date', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'status', 'submitted_at'],
+        'required': ['staff_id', 'week_start_date', 'week_end_date'],
+        'indexes': ['staff_id', 'week_start_date', 'status', 'submitted_at']
+    },
+    'staff_real_time_status': {
+        'fields': ['staff_id', 'current_status', 'workload_level', 'active_task_count', 'active_task_ids', 'current_location', 'is_scheduled_on_duty', 'is_currently_available', 'auto_assign_eligible', 'status_updated_at', 'last_activity_at'],
+        'required': ['staff_id', 'current_status', 'workload_level'],
+        'indexes': ['staff_id', 'current_status', 'auto_assign_eligible', 'is_scheduled_on_duty', 'workload_level', 'last_activity_at']
+    },
+    'day_off_requests': {
+        'fields': ['formatted_id', 'staff_id', 'request_date', 'reason', 'description', 'request_type', 'status', 'requested_at', 'approved_by', 'approved_at', 'rejection_reason', 'affects_critical_tasks'],
+        'required': ['staff_id', 'request_date', 'reason', 'status', 'requested_at'],
+        'indexes': ['staff_id', 'status', 'request_date', 'requested_at', 'approved_by', 'formatted_id']
     },
 }

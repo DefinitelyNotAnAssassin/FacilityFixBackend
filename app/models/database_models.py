@@ -668,3 +668,15 @@ class BulkRejectRequest(BaseModel):
     """Request model for bulk rejecting work order permits"""
     permit_ids: List[str]  # List of permit IDs to reject
     reason: Optional[str] = None  # Optional reason for rejection
+
+# Bulk day-off request models
+class BulkApproveDayOffRequest(BaseModel):
+    """Request model for bulk approving day-off requests"""
+    request_ids: List[str]  # List of day-off request IDs to approve
+    admin_notes: Optional[str] = None  # Optional notes for approval
+
+
+class BulkRejectDayOffRequest(BaseModel):
+    """Request model for bulk rejecting day-off requests"""
+    request_ids: List[str]  # List of day-off request IDs to reject
+    rejection_reason: str  # Reason for rejection (required)
