@@ -33,6 +33,7 @@ class Equipment(BaseModel):
     manufacturer: Optional[str] = None
     equipment_type: str  # e.g., fan_coil, pump, elevator, etc.
     category: Optional[str] = None  # HVAC, Plumbing, Electrical, Masonry, Carpentry, Other
+    maintenance_type: Optional[str] = None  # preventive, corrective, proactive, emergency, inspection
     model_number: Optional[str] = None
     serial_number: Optional[str] = None
     location: str  # e.g., Lobby, Gym, Parking area, etc.
@@ -43,6 +44,7 @@ class Equipment(BaseModel):
     is_critical: bool = Field(default=False)
     is_active: bool = Field(default=True)
     created_by: Optional[str] = None
+    updated_by: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -58,14 +60,11 @@ class Inventory(BaseModel):
     reorder_level: int
     max_stock_level: Optional[int] = None
     unit_of_measure: str  # pcs, liters, kg, etc.
-    unit_cost: Optional[float] = None
     supplier_name: Optional[str] = None
     supplier_contact: Optional[str] = None
-    storage_location: Optional[str] = None
     description: Optional[str] = None
     is_critical: bool = Field(default=False)
     is_active: bool = Field(default=True)
-    recommended_on: List[str] = Field(default_factory=list)  # Locations where this item is recommended
     last_restocked_date: Optional[datetime] = None
     expiry_date: Optional[datetime] = None
     date_added: Optional[datetime] = None
@@ -99,13 +98,12 @@ class InventoryRequest(BaseModel):
     reference_id: Optional[str] = None  # job_service_id or maintenance_task_id
     priority: str = Field(default="normal")  # low, normal, high, urgent
     status: str = Field(default="pending")  # pending, approved, denied, received
-    justification: Optional[str] = None
     admin_notes: Optional[str] = None
     date_needed: Optional[datetime] = None  # When the item is needed by
     notes: Optional[str] = None  # Additional notes from requester
     requested_date: Optional[datetime] = None
     approved_date: Optional[datetime] = None
-    fulfilled_date: Optional[datetime] = None
+    fulfilled_date: Optional[datetime] = None # When items were received
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -291,6 +289,7 @@ class MaintenanceTask(BaseModel):
 
     # Scheduling information
     task_type: str = Field(default="scheduled")  # scheduled, recurring, on_demand, internal, external
+    task_type_id: Optional[str] = None  # Reference to TaskType for inventory auto-reservation
     maintenance_type: Optional[str] = None  # internal, external, ipm, epm
     scheduled_date: datetime
     scheduled_time_slot: Optional[str] = None  # "09:00-12:00"
@@ -310,7 +309,7 @@ class MaintenanceTask(BaseModel):
     # Resource tracking
     parts_used: Optional[List[dict]] = []  # [{"inventory_id": "...", "quantity": 2}]
     tools_used: Optional[List[str]] = []
-    inventory_request_ids: Optional[List[str]] = []  # IDs of linked inventory requests
+    inventory_reservation_ids: Optional[List[str]] = []  # IDs of linked inventory reservations
     
     # Documentation
     admin_notes: Optional[str] = None
@@ -346,6 +345,21 @@ class MaintenanceTask(BaseModel):
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+# Task Type Model 
+class TaskType(BaseModel):
+    id: Optional[str] = None
+    formatted_id: Optional[str] = None
+    name: str
+    created_by: str
+    created_at: Optional[datetime] = None
+    updated_by: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    maintenance_type: Optional[str] = None  # Preventive, Corrective, Proactive, Emergency, Inspection, Repair, Other
+    description: Optional[str] = None
+    inventory_items: Optional[List[dict]] = []  # Non-reserved inventory items associated with this task type
+    is_active: bool = Field(default=True)  # Soft-delete flag
 
 # Maintenance Schedule Model
 class MaintenanceSchedule(BaseModel):

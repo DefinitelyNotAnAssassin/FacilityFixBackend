@@ -15,6 +15,7 @@ COLLECTIONS = {
     'job_services': 'job_services',
     'work_order_permits': 'work_order_permits',
     'maintenance_tasks': 'maintenance_tasks',
+    'task_types': 'task_types',
     'announcements': 'announcements',
     'notifications': 'notifications',
     'status_history': 'status_history',
@@ -111,6 +112,11 @@ COLLECTION_SCHEMAS = {
         'fields': ['equipment_id', 'assigned_to', 'location', 'task_description', 'status', 'scheduled_date', 'recurrence_type'],
         'required': ['assigned_to', 'location', 'task_description', 'scheduled_date'],
         'indexes': ['status', 'assigned_to', 'scheduled_date']
+    },
+    'task_types': {
+        'fields': ['name', 'maintenance_type', 'description', 'inventory_items', 'created_by', 'is_active', 'created_at', 'updated_at', 'updated_by', 'formatted_id'],
+        'required': ['name', 'created_by'],
+        'indexes': ['maintenance_type', 'name', 'created_by', 'is_active', 'formatted_id']
     },
     'announcements': {
         'fields': ['created_by', 'building_id', 'title', 'content', 'type', 'audience', 'is_active'],

@@ -3,7 +3,7 @@ from pydantic import ValidationError
 from app.models.database_models import (
     Building, Unit, UserProfile, Equipment, Inventory, InventoryTransaction,
     InventoryRequest, InventoryReservation, LowStockAlert, InventoryUsageAnalytics,
-    ConcernSlip, JobService, WorkOrderPermit, MaintenanceTask, Announcement,
+    ConcernSlip, JobService, WorkOrderPermit, MaintenanceTask, Announcement, TaskType,
     StatusHistory, Feedback, Counter, Notification, FileAttachment
 )
 from app.models.staff_scheduling_models import (
@@ -28,6 +28,7 @@ class SchemaValidator:
         'job_services': JobService,
         'work_order_permits': WorkOrderPermit,
         'maintenance_tasks': MaintenanceTask,
+        'task_types': TaskType,
         'announcements': Announcement,
         'notifications': Notification,
         'status_history': StatusHistory,

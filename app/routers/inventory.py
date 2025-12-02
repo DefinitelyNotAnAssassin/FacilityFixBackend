@@ -9,6 +9,7 @@ from ..models.database_models import (
     LowStockAlert, InventoryUsageAnalytics
 )
 import logging
+from ..services.user_id_service import user_id_service
 
 logger = logging.getLogger(__name__)
 
@@ -278,19 +279,56 @@ class InventoryReservationRequest(BaseModel):
 async def create_inventory_reservation(
     reservation_data: InventoryReservationRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
-    _: None = Depends(require_role(["admin"]))  # Only admin can reserve
+    _: None = Depends(require_role(["admin"]))
 ):
     """
     Reserve inventory for a maintenance task (Admin only).
-    Creates a reservation record separate from requests.
+    Staff should use /requests endpoint to create inventory requests instead.
     """
     try:
+        # Permission handling: Admin can reserve for any task; staff can only reserve for tasks they are assigned to
+        # Only admin allowed via dependency enforcement
+
         reservation_dict = {
             'inventory_id': reservation_data.inventory_id,
             'quantity': reservation_data.quantity,
             'maintenance_task_id': reservation_data.maintenance_task_id
         }
         
+        # Get user role from current_user
+        user_role = current_user.get('role', 'user')
+        
+        # If staff, verify that they are assigned to the task
+        if user_role == 'staff':
+            from ..services.maintenance_task_service import maintenance_task_service
+            from ..services.user_id_service import user_id_service
+
+            user_id = current_user.get('uid')
+            if not user_id:
+                raise HTTPException(status_code=401, detail="User ID not found")
+
+            # Validate task assignment
+            task = await maintenance_task_service.get_task(reservation_data.maintenance_task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+            # Get user profile
+            profile = await user_id_service.get_user_profile(user_id)
+            assigned = False
+            # Allow creation if user is assigned to this task (user id or assigned staff name match)
+            if task.assigned_to == user_id or task.assigned_to == f"{profile.first_name} {profile.last_name}" or getattr(task, 'assigned_staff_name', None) == f"{profile.first_name} {profile.last_name}":
+                assigned = True
+
+            # Check checklist item assignments
+            if not assigned and getattr(task, 'checklist_completed', None):
+                for item in (task.checklist_completed or []):
+                    if item.get('assigned_to') == getattr(profile, 'staff_id', None) or item.get('assigned_to') == user_id:
+                        assigned = True
+                        break
+
+            if not assigned:
+                raise HTTPException(status_code=403, detail="You are not assigned to this maintenance task")
+
         success, reservation_id, error = await inventory_service.create_inventory_reservation(
             reservation_dict,
             current_user["uid"]
@@ -395,6 +433,17 @@ async def mark_reservation_consumed(
 ):
     """Mark inventory reservation as consumed (items used for completed task)"""
     try:
+        # Staff can only change reservations created by admin
+        if current_user.get('role') == 'staff':
+            success, reservation, err = await inventory_service.get_inventory_reservation_by_id(reservation_id)
+            if not success or not reservation:
+                raise HTTPException(status_code=404, detail=err or 'Reservation not found')
+            origin_uid = reservation.get('created_by') or reservation.get('reserved_by')
+            if not origin_uid:
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
+            origin_profile = await user_id_service.get_user_profile(origin_uid)
+            if not origin_profile or origin_profile.role != 'admin':
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
         success, error = await inventory_service.mark_reservation_consumed(
             reservation_id,
             current_user["uid"]
@@ -422,6 +471,17 @@ async def release_reservation(
 ):
     """Release inventory reservation (cancel reservation)"""
     try:
+        # Staff can only release reservations created by admin
+        if current_user.get('role') == 'staff':
+            success, reservation, err = await inventory_service.get_inventory_reservation_by_id(reservation_id)
+            if not success or not reservation:
+                raise HTTPException(status_code=404, detail=err or 'Reservation not found')
+            origin_uid = reservation.get('created_by') or reservation.get('reserved_by')
+            if not origin_uid:
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
+            origin_profile = await user_id_service.get_user_profile(origin_uid)
+            if not origin_profile or origin_profile.role != 'admin':
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
         success, error = await inventory_service.release_reservation(
             reservation_id,
             current_user["uid"]
@@ -449,6 +509,17 @@ async def mark_reservation_received(
 ):
     """Mark inventory reservation as received (staff has picked up the items)"""
     try:
+        # Staff can only mark reservations created by admin as received
+        if current_user.get('role') == 'staff':
+            success, reservation, err = await inventory_service.get_inventory_reservation_by_id(reservation_id)
+            if not success or not reservation:
+                raise HTTPException(status_code=404, detail=err or 'Reservation not found')
+            origin_uid = reservation.get('created_by') or reservation.get('reserved_by')
+            if not origin_uid:
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
+            origin_profile = await user_id_service.get_user_profile(origin_uid)
+            if not origin_profile or origin_profile.role != 'admin':
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
         success, error = await inventory_service.mark_reservation_received(
             reservation_id,
             current_user["uid"]
@@ -481,6 +552,17 @@ async def request_replacement_for_defective_item(
 ):
     """Request replacement for a defective reserved item"""
     try:
+        # Staff can only request replacement for admin-created reservations
+        if current_user.get('role') == 'staff':
+            success, reservation, err = await inventory_service.get_inventory_reservation_by_id(reservation_id)
+            if not success or not reservation:
+                raise HTTPException(status_code=404, detail=err or 'Reservation not found')
+            origin_uid = reservation.get('created_by') or reservation.get('reserved_by')
+            if not origin_uid:
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
+            origin_profile = await user_id_service.get_user_profile(origin_uid)
+            if not origin_profile or origin_profile.role != 'admin':
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
         success, request_id, error = await inventory_service.request_replacement_for_defective_item(
             reservation_id,
             replacement_data.dict(),
@@ -514,6 +596,203 @@ async def request_replacement_for_defective_item(
         raise
     except Exception as e:
         logger.error(f"Error requesting replacement for reservation {reservation_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/requests/{request_id}/return", response_model=Dict[str, Any])
+async def return_inventory_request(
+    request_id: str,
+    quantity: Optional[int] = Query(None, description="Quantity to return; defaults to approved/ requested quantity"),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(require_role(["admin", "staff"]))
+):
+    """Return a fulfilled request back to inventory (Staff and Admin only)."""
+    try:
+        # Staff can return their own received requests
+        if current_user.get('role') == 'staff':
+            success, request_data, err = await inventory_service.get_inventory_request_by_id(request_id)
+            if not success or not request_data:
+                raise HTTPException(status_code=404, detail=err or 'Request not found')
+            
+            requester = request_data.get('requested_by')
+            if requester != current_user['uid']:
+                raise HTTPException(status_code=403, detail='Staff can only return their own requests')
+        
+        from ..services.inventory_service import inventory_service
+        success, error = await inventory_service.return_inventory_request(request_id, current_user["uid"], quantity)
+        if success:
+            return {"success": True, "message": "Inventory returned successfully"}
+        else:
+            raise HTTPException(status_code=400, detail=error)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error returning inventory request {request_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/reservations/{reservation_id}/return", response_model=Dict[str, Any])
+async def return_reservation(
+    reservation_id: str,
+    quantity: Optional[int] = Query(None, description="Quantity to return; defaults to reservation quantity"),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(require_role(["admin", "staff"]))
+):
+    """Return items from a reservation to stock."""
+    try:
+        # Staff can only return reservations created by admin
+        if current_user.get('role') == 'staff':
+            success, reservation, err = await inventory_service.get_inventory_reservation_by_id(reservation_id)
+            if not success or not reservation:
+                raise HTTPException(status_code=404, detail=err or 'Reservation not found')
+            origin_uid = reservation.get('created_by') or reservation.get('reserved_by')
+            if not origin_uid:
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
+            origin_profile = await user_id_service.get_user_profile(origin_uid)
+            if not origin_profile or origin_profile.role != 'admin':
+                raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
+        from ..services.inventory_service import inventory_service
+        success, error = await inventory_service.return_reservation(reservation_id, current_user["uid"], quantity)
+        if success:
+            return {"success": True, "message": "Reservation returned and stock updated"}
+        else:
+            raise HTTPException(status_code=400, detail=error)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error returning reservation {reservation_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+class ReservationActionRequest(BaseModel):
+    inventory_id: str
+    quantity: int
+    current_stock: Optional[int] = None
+    maintenance_task_id: str
+    item_name: Optional[str] = None
+    item_code: Optional[str] = None
+    stock_quantity: Optional[int] = None
+    stock_status: Optional[str] = None
+    type: str = "reservation"
+    action: str  # "request" or "return"
+
+@router.post("/reservations/action", response_model=Dict[str, Any])
+async def handle_reservation_action(
+    action_data: ReservationActionRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(require_role(["admin", "staff"]))
+):
+    """Handle actions on reservations (request/return) with flexible data format"""
+    try:
+        if action_data.action == "request":
+            # Create inventory request from reservation data
+            request_data = {
+                'inventory_id': action_data.inventory_id,
+                'quantity': action_data.quantity,
+                'purpose': "Maintenance task inventory request",
+                'maintenance_task_id': action_data.maintenance_task_id,
+                'priority': 'medium',
+                'needed_by': None
+            }
+            
+            success, request_id, error = await inventory_service.create_inventory_request(
+                request_data,
+                current_user["uid"]
+            )
+            
+            if success:
+                return {
+                    "success": True,
+                    "message": "Inventory request created successfully",
+                    "request_id": request_id
+                }
+            else:
+                raise HTTPException(status_code=400, detail=error)
+                
+        elif action_data.action == "return":
+            # Handle return action - need to find the reservation first
+            # Since we have maintenance_task_id, query for reservations
+            filters = {'maintenance_task_id': action_data.maintenance_task_id}
+            success, reservations, error = await inventory_service.get_inventory_reservations(filters)
+            
+            if not success or not reservations:
+                raise HTTPException(status_code=404, detail="No reservations found for this maintenance task")
+            
+            # Find the matching reservation
+            matching_reservation = None
+            for reservation in reservations:
+                if reservation.get('inventory_id') == action_data.inventory_id:
+                    matching_reservation = reservation
+                    break
+            
+            if not matching_reservation:
+                raise HTTPException(status_code=404, detail="Matching reservation not found")
+            
+            reservation_id = matching_reservation.get('id')
+            success, error = await inventory_service.return_reservation(
+                reservation_id, 
+                current_user["uid"], 
+                action_data.quantity
+            )
+            
+            if success:
+                return {
+                    "success": True,
+                    "message": "Items returned to inventory successfully"
+                }
+            else:
+                raise HTTPException(status_code=400, detail=error)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown action: {action_data.action}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error handling reservation action {action_data.action}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/reservations/{reservation_id}/request", response_model=Dict[str, Any])
+async def create_request_from_reservation(
+    reservation_id: str,
+    purpose: Optional[str] = Query("Maintenance task", description="Purpose for the inventory request"),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(require_role(["admin", "staff"]))
+):
+    """Create an inventory request from a reservation"""
+    try:
+        # Get the reservation data
+        success, reservation, error = await inventory_service.get_inventory_reservation_by_id(reservation_id)
+        if not success or not reservation:
+            raise HTTPException(status_code=404, detail=error or "Reservation not found")
+        
+        # Create request data from reservation
+        request_data = {
+            'inventory_id': reservation.get('inventory_id'),
+            'quantity': reservation.get('quantity', 1),
+            'purpose': purpose,
+            'maintenance_task_id': reservation.get('maintenance_task_id'),
+            'priority': 'medium',
+            'needed_by': None
+        }
+        
+        # Create the inventory request
+        success, request_id, error = await inventory_service.create_inventory_request(
+            request_data,
+            current_user["uid"]
+        )
+        
+        if success:
+            return {
+                "success": True,
+                "message": "Inventory request created from reservation",
+                "request_id": request_id
+            }
+        else:
+            raise HTTPException(status_code=400, detail=error)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating request from reservation {reservation_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -952,6 +1231,22 @@ async def receive_inventory_request(
 ):
     """Mark an inventory request as received (Staff and Admin only)"""
     try:
+        # Staff can receive their own requests that have been approved by admin
+        if current_user.get('role') == 'staff':
+            success, request_data, err = await inventory_service.get_inventory_request_by_id(request_id)
+            if not success or not request_data:
+                raise HTTPException(status_code=404, detail=err or 'Request not found')
+
+            # Check if request is approved
+            if request_data.get('status') != 'approved':
+                raise HTTPException(status_code=403, detail='Staff can only receive approved requests')
+
+            # Optionally verify they are the requester or assigned to the task
+            requester = request_data.get('requested_by')
+            if requester != current_user['uid']:
+                # Could allow if assigned to task, but for now enforce requester match
+                raise HTTPException(status_code=403, detail='Staff can only receive their own requests')
+        
         update_data = {
             "status": "received",
             "deduct_stock": deduct_stock
@@ -990,6 +1285,19 @@ async def get_low_stock_alerts(
 ):
     """Get low stock alerts"""
     try:
+        # Staff can only return requests created by admin
+        if current_user.get('role') == 'staff':
+            success, request_data, err = await inventory_service.get_inventory_request_by_id(request_id)
+            if not success or not request_data:
+                raise HTTPException(status_code=404, detail=err or 'Request not found')
+
+            origin_uid = request_data.get('requested_by') or request_data.get('created_by') or request_data.get('approved_by')
+            if not origin_uid:
+                raise HTTPException(status_code=403, detail='Staff can only return admin-created requests')
+
+            origin_profile = await user_id_service.get_user_profile(origin_uid)
+            if not origin_profile or origin_profile.role != 'admin':
+                raise HTTPException(status_code=403, detail='Staff can only return admin-created requests')
         success, alerts, error = await inventory_service.get_low_stock_alerts(
             building_id=building_id,
             status=status
@@ -1281,6 +1589,25 @@ async def get_my_maintenance_inventory_requests(
 # ═══════════════════════════════════════════════════════════════════════════
 # HEALTH CHECK ENDPOINT
 # ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/forecasting/{building_id}", response_model=List[Dict[str, Any]])
+async def get_inventory_forecasting(
+    building_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(require_role(["admin"]))
+):
+    """Get inventory forecasting data for a building (Admin only)"""
+    try:
+        success, data, error = await inventory_service.get_inventory_forecasting_data(building_id)
+        
+        if success:
+            return data
+        else:
+            raise HTTPException(status_code=400, detail=error)
+            
+    except Exception as e:
+        logger.error(f"Error getting forecasting data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/health", response_model=Dict[str, Any])
 async def inventory_health_check():

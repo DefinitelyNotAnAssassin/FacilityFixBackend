@@ -12,11 +12,130 @@ from app.services.maintenance_task_service import maintenance_task_service
 from app.services.special_maintenance_service import special_maintenance_service
 from app.services.user_id_service import UserIdService, user_id_service
 from app.services.notification_manager import notification_manager
+from app.services.task_type_service import task_type_service
+from app.services.inventory_service import inventory_service
 from app.database.collections import COLLECTIONS
 from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/maintenance", tags=["maintenance"])
+
+
+@router.get("/task-types", response_model=Dict[str, Any])
+async def get_task_types_for_dropdown(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all active task types for maintenance task creation dropdown"""
+    try:
+        success, task_types, error = await task_type_service.list_task_types(include_inactive=False)
+        logger.info(f"Task types query result: success={success}, count={len(task_types) if task_types else 0}, error={error}")
+        if success:
+            # Format for dropdown: include id, name, and formatted inventory_items
+            dropdown_items = []
+            for tt in task_types:
+                # Format inventory items with only id, name, stock, quantity and unit
+                formatted_inventory = []
+                inventory_items = tt.get("inventory_items", [])
+                for item in inventory_items:
+                    inventory_id = item.get("inventory_id") or item.get("id")
+                    
+                    # Fetch actual inventory data to get current stock and unit
+                    item_success, item_data, item_error = await inventory_service.get_inventory_item(inventory_id)
+                    
+                    if item_success and item_data:
+                        formatted_inventory.append({
+                            "id": inventory_id,
+                            "item_name": item_data.get("item_name") or item.get("item_name"),
+                            "current_stock": item_data.get("current_stock", 0),
+                            "quantity": item.get("quantity", 1),
+                            "unit_of_measure": item_data.get("unit_of_measure", "pcs")
+                        })
+                    else:
+                        # Fallback to task type data if inventory item not found
+                        formatted_inventory.append({
+                            "id": inventory_id,
+                            "item_name": item.get("item_name", "Unknown Item"),
+                            "current_stock": 0,
+                            "quantity": item.get("quantity", 1),
+                            "unit_of_measure": item.get("unit_of_measure", "pcs")
+                        })
+                
+                dropdown_items.append({
+                    "id": tt.get("_doc_id") or tt.get("id") or tt.get("formatted_id"),
+                    "name": tt.get("name"),
+                    "maintenance_type": tt.get("maintenance_type") or tt.get("category"),  # Handle both field names
+                    "description": tt.get("description"),
+                    "inventory_items": formatted_inventory,
+                    "formatted_id": tt.get("formatted_id")
+                })
+            
+            return {
+                "success": True,
+                "data": dropdown_items,
+                "count": len(dropdown_items)
+            }
+        else:
+            raise HTTPException(status_code=400, detail=error)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error fetching task types for dropdown: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/task-types/{task_type_id}/inventory", response_model=Dict[str, Any])
+async def get_task_type_inventory(
+    task_type_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get inventory items for a specific task type"""
+    try:
+        # Get the task type
+        success, task_type_data, error = await task_type_service.get_task_type(task_type_id)
+        
+        if not success or not task_type_data:
+            raise HTTPException(status_code=404, detail=f"Task type not found: {error}")
+        
+        # Format inventory items with current stock data
+        formatted_inventory = []
+        inventory_items = task_type_data.get("inventory_items", [])
+        
+        for item in inventory_items:
+            inventory_id = item.get("inventory_id") or item.get("id")
+            
+            # Fetch actual inventory data to get current stock and unit
+            item_success, item_data, item_error = await inventory_service.get_inventory_item(inventory_id)
+            
+            if item_success and item_data:
+                formatted_inventory.append({
+                    "id": inventory_id,
+                    "item_name": item_data.get("item_name") or item.get("item_name"),
+                    "current_stock": item_data.get("current_stock", 0),
+                    "quantity": item.get("quantity", 1),
+                    "unit_of_measure": item_data.get("unit_of_measure", "pcs")
+                })
+            else:
+                # Fallback to task type data if inventory item not found
+                formatted_inventory.append({
+                    "id": inventory_id,
+                    "item_name": item.get("item_name", "Unknown Item"),
+                    "current_stock": item.get("current_stock", 0),
+                    "quantity": item.get("quantity", 1),
+                    "unit_of_measure": item.get("unit_of_measure", "pcs")
+                })
+        
+        return {
+            "success": True,
+            "data": formatted_inventory,
+            "count": len(formatted_inventory),
+            "task_type_id": task_type_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error fetching task type inventory for {task_type_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _convert_to_local_time(dt: datetime) -> datetime:
@@ -134,6 +253,7 @@ class MaintenanceTaskCreate(BaseModel):
     category: Optional[str] = ""
     priority: Optional[str] = ""
     task_type: Optional[str] = "new"
+    task_type_id: Optional[str] = None  # Reference to TaskType for auto-reserving inventory
     maintenance_type: Optional[str] = None  # internal, external, ipm, epm
     scheduled_time_slot: Optional[str] = None
     estimated_duration: Optional[int] = Field(default=None, ge=1)  # At least 1 minute
@@ -360,6 +480,44 @@ async def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
     return data
 
 
+@router.post("/{task_id}/inventory/receive", response_model=Dict[str, Any])
+async def receive_task_inventory(
+    task_id: str,
+    deduct_stock: bool = Query(True, description="Whether to deduct stock when receiving items"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Mark all inventory items/requests for a given maintenance task as received by the assigned staff."""
+    try:
+        # Validate that the current user is assigned to the task or an admin
+        task = await maintenance_task_service.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        assigned_to = task.assigned_to
+        user_id = current_user.get("uid")
+        user_profile = await user_id_service.get_user_profile(user_id)
+        is_admin = current_user.get("role") == "admin"
+        assigned_match = False
+        if assigned_to:
+            if assigned_to == user_id or assigned_to == f"{user_profile.first_name} {user_profile.last_name}":
+                assigned_match = True
+        if not (is_admin or assigned_match):
+            raise HTTPException(status_code=403, detail="Only assigned staff or admins can receive task inventory")
+
+        # Call inventory service to mark items received
+        from app.services.inventory_service import inventory_service
+        success, err = await inventory_service.mark_task_inventory_received(task_id, user_id, deduct_stock=deduct_stock)
+        if success:
+            return {"success": True, "message": "All task inventory marked as received"}
+        else:
+            raise HTTPException(status_code=400, detail=err)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error receiving inventory for task {task_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.get("/")
 async def get_all_maintenance_tasks(
     building_id: Optional[str] = Query(None),
@@ -512,20 +670,21 @@ async def create_maintenance_task(
 
         serialized_task = await _serialize_task(task)
 
-        # If the task contains inventory_request_ids, include full request documents
-        req_ids = serialized_task.get("inventory_request_ids") or getattr(task, "inventory_request_ids", None) or []
-        inventory_requests = []
-        if req_ids:
-            for rid in req_ids:
+        # If the task contains inventory_reservation_ids, include full reservation documents
+        res_ids = serialized_task.get("inventory_reservation_ids") or getattr(task, "inventory_reservation_ids", None) or []
+        inventory_reservations = []
+        if res_ids:
+            for rid in res_ids:
                 try:
-                    s, req_doc, e = await maintenance_task_service.db.get_document(COLLECTIONS["inventory_requests"], rid)
-                    if s and req_doc:
-                        inventory_requests.append(req_doc)
+                    s, res_doc, e = await maintenance_task_service.db.get_document(COLLECTIONS["inventory_reservations"], rid)
+                    if s and res_doc:
+                        res_doc["_item_type"] = "reservation"  # Mark as reservation
+                        inventory_reservations.append(res_doc)
                 except Exception:
-                    logger.warning("Failed to fetch inventory request %s for serialization", rid)
+                    logger.warning("Failed to fetch inventory reservation %s for serialization", rid)
 
-        if inventory_requests:
-            serialized_task["inventory_requests"] = inventory_requests
+        if inventory_reservations:
+            serialized_task["inventory_reservations"] = inventory_reservations
 
         # Send notification if task is created with assigned_to (staff assignment)
         if task_dict.get("assigned_to"):

@@ -9,6 +9,7 @@ from app.models.database_models import MaintenanceTask
 from app.services.user_id_service import UserIdService
 from app.services.maintenance_id_service import maintenance_id_service
 from app.services.inventory_service import inventory_service
+from app.services.task_type_service import task_type_service
 
 logger = logging.getLogger(__name__)
 
@@ -140,93 +141,88 @@ class MaintenanceTaskService:
         if not task_id:
             task_id = await maintenance_id_service.generate_maintenance_id(maintenance_type)
 
-        # If the payload includes inventory items (either `parts_used` with
-        # inventory references or a list of `inventory_request_ids` which we
-        # treat as inventory item ids), validate them and create reservation
-        # inventory requests. The created request ids will be stored in the
-        # maintenance task as `inventory_request_ids`.
-        inventory_input = payload.get("parts_used") or payload.get("inventory_request_ids") or []
-        created_request_ids: List[str] = []
-        created_request_docs: List[Dict[str, Any]] = []
+        # Handle task type inventory reservation first
+        task_type_id = payload.get("task_type_id")
+        task_type_inventory: List[Dict[str, Any]] = []
+        
+        if task_type_id:
+            try:
+                # Fetch task type and its inventory items
+                success, task_type_data, error = await task_type_service.get_task_type(task_type_id)
+                if success and task_type_data:
+                    task_type_inventory = task_type_data.get("inventory_items") or []
+                    logger.info(f"Found {len(task_type_inventory)} inventory items from task type {task_type_id}")
+                    
+                    # Set maintenance_type from task type if not explicitly provided
+                    if not payload.get("maintenance_type"):
+                        tt_maintenance_type = task_type_data.get("maintenance_type")
+                        if tt_maintenance_type:
+                            payload["maintenance_type"] = tt_maintenance_type
+                            maintenance_type = tt_maintenance_type.lower()
+                else:
+                    logger.warning(f"Task type {task_type_id} not found: {error}")
+            except Exception as e:
+                logger.error(f"Error fetching task type {task_type_id}: {e}")
+        
+        # Merge task type inventory with manually selected inventory
+        # Create inventory reservations (not requests) for task type and manual inventory
+        manual_inventory = payload.get("parts_used") or []
+        
+        # Combine task type inventory with manual selections
+        all_inventory = []
+        all_inventory.extend(task_type_inventory)  # Task type items first
+        
+        # Add manual inventory (avoid duplicates by inventory_id)
+        existing_ids = {item.get("inventory_id") or item.get("id") for item in task_type_inventory}
+        for manual_item in (manual_inventory if isinstance(manual_inventory, list) else []):
+            item_id = manual_item.get("inventory_id") or manual_item.get("id") if isinstance(manual_item, dict) else manual_item
+            if item_id not in existing_ids:
+                all_inventory.append(manual_item)
+        
+        created_reservation_ids: List[str] = []
+        created_reservations: List[Dict[str, Any]] = []
 
-        # Helper to normalize parts entries
-        parts_entries: List[Dict[str, Any]] = []
-        if isinstance(inventory_input, list) and inventory_input:
-            # parts_used may be list of dicts, inventory_request_ids may be list of ids
-            if all(isinstance(i, dict) for i in inventory_input):
-                parts_entries = inventory_input  # expected dicts with inventory_id/quantity
-            else:
-                # list of ids -> treat as existing inventory_request ids when possible
-                for iid in inventory_input:
-                    if not isinstance(iid, str):
-                        continue
-                    # Try to fetch existing inventory_request document
-                    success, req_doc, err = await self.db.get_document(COLLECTIONS["inventory_requests"], iid)
-                    if success and req_doc:
-                        created_request_ids.append(iid)
-                        created_request_docs.append(req_doc)
-                    else:
-                        # treat as inventory id to create a reservation
-                        parts_entries.append({"inventory_id": iid, "quantity": 1, "reserve": True})
-
-        for entry in parts_entries:
-            # If entry already references an existing inventory_request, include it and skip creation
-            existing_req_id = entry.get("inventory_request_id") or entry.get("request_id") or entry.get("id")
-            if existing_req_id and isinstance(existing_req_id, str):
-                success, req_doc, err = await self.db.get_document(COLLECTIONS["inventory_requests"], existing_req_id)
-                if success and req_doc:
-                    if existing_req_id not in created_request_ids:
-                        created_request_ids.append(existing_req_id)
-                        created_request_docs.append(req_doc)
-                    continue
-
-            # Only create a request if reserve flag is set (frontend sends reserve: true)
-            reserve_flag = entry.get("reserve", True)
-            if not reserve_flag:
+        # Create inventory reservations for all inventory items
+        for entry in all_inventory:
+            if not isinstance(entry, dict):
                 continue
-
+                
             inv_id = entry.get("inventory_id") or entry.get("id")
-            qty = int(entry.get("quantity") or entry.get("quantity_requested") or 1)
+            qty = int(entry.get("quantity") or 1)
             if not inv_id:
-                logger.warning("Skipping parts entry without inventory_id: %s", entry)
+                logger.warning("Skipping inventory entry without inventory_id: %s", entry)
                 continue
 
             # Validate inventory item exists
             item_success, item_data, item_error = await inventory_service.get_inventory_item(inv_id)
             if not item_success or not item_data:
-                logger.warning("Inventory item not found while creating request: %s (%s)", inv_id, item_error)
+                logger.warning("Inventory item not found: %s (%s)", inv_id, item_error)
                 continue
 
-            # Create an inventory request record linked to this maintenance task
-            request_payload = {
+            # Create inventory reservation (not request)
+            reservation_payload = {
                 "inventory_id": item_data.get("id") or item_data.get("_doc_id") or inv_id,
-                "requested_by": created_by,
-                "quantity_requested": qty,
-                "purpose": f"Reserved for maintenance task {task_id}",
                 "maintenance_task_id": task_id,
-                "reference_type": "maintenance_task",
-                "reference_id": task_id,
-                # Mark as reserved; tenant can request again if item broken
-                "status": "reserved",
-                "tenant_can_request_again": True,
+                "quantity": qty,
             }
 
-            # Try to reserve atomically using inventory service helper
-            reserve_success, req_id_or_err, reserve_err = await inventory_service.reserve_item_for_task(inv_id, qty, task_id, created_by)
+            # Create reservation using inventory service
+            reserve_success, reservation_id, reserve_err = await inventory_service.create_inventory_reservation(
+                reservation_payload, created_by
+            )
             if not reserve_success:
-                logger.warning("Failed to reserve inventory %s: %s", inv_id, req_id_or_err or reserve_err)
+                logger.warning("Failed to create inventory reservation %s: %s", inv_id, reserve_err)
                 continue
+            created_reservation_ids.append(reservation_id)
+            # Fetch created reservation doc to include details
+            success, res_doc, err = await self.db.get_document(COLLECTIONS["inventory_reservations"], reservation_id)
+            if success and res_doc:
+                res_doc["_item_type"] = "reservation"  # Mark as reservation
+                created_reservations.append(res_doc)
 
-            req_id = req_id_or_err
-            created_request_ids.append(req_id)
-            # Fetch created request doc to include details
-            success, req_doc, err = await self.db.get_document(COLLECTIONS["inventory_requests"], req_id)
-            if success and req_doc:
-                created_request_docs.append(req_doc)
-
-        # Attach created request ids and details to payload (if any)
-        if created_request_ids:
-            payload = {**payload, "inventory_request_ids": created_request_ids, "inventory_requests": created_request_docs}
+        # Attach created reservation ids and details to payload (if any)
+        if created_reservation_ids:
+            payload = {**payload, "inventory_reservation_ids": created_reservation_ids, "inventory_reservations": created_reservations}
 
         data = {
             **payload,
@@ -234,6 +230,7 @@ class MaintenanceTaskService:
             "formatted_id": payload.get("formatted_id") or task_id,
             "status": payload.get("status") or "scheduled",
             "task_type": task_type,
+            "task_type_id": payload.get("task_type_id"),  # Store reference to TaskType
             "maintenance_type": maintenance_type,
             "recurrence_type": payload.get("recurrence_type") or "",
             "assigned_to": payload.get("assigned_to") or "unassigned",
