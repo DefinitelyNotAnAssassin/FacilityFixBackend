@@ -90,7 +90,7 @@ celery_app.conf.beat_schedule = {
     # Check and escalate aging pending items
     'check-and-escalate-pending-items': {
         'task': 'app.tasks.escalation_tasks.check_and_escalate_pending_items',
-        'schedule': 86400.0,  # Daily (24 hours)
+        'schedule': 86400.0,  # Daily 
     },
 }
 

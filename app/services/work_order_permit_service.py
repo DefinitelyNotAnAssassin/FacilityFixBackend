@@ -229,6 +229,15 @@ class WorkOrderPermitService:
                         "updated_at": datetime.utcnow()
                     })
             
+            # Notify admin and tenant of completion
+            from app.services.notification_manager import notification_manager
+            contractor_name = permit_data.get("contractor_name") or permit_data.get("title") or permit_data.get("description") or "Work Order"
+            await notification_manager.notify_permit_completed(
+                permit_id=permit_id,
+                contractor_name=contractor_name,
+                completion_notes=notes
+            )
+            
             # Notify tenant of completion
             await self._send_tenant_notification(
                 permit_data.get("requested_by"),

@@ -219,7 +219,7 @@ class NotificationManager:
             for admin in admin_users:
                 await self.create_notification(
                     notification_type=NotificationType.WORK_ORDER_SUBMITTED,
-                    recipient_id=admin["id"],
+                    recipient_id=admin["_doc_id"],
                     title="New Work Order Request",
                     message=f"A new work order request has been submitted for {location or 'review'}.",
                     related_entity_type="work_order",
@@ -630,7 +630,7 @@ class NotificationManager:
             for admin in admin_users:
                 await self.create_notification(
                     notification_type=NotificationType.PERMIT_CREATED,
-                    recipient_id=admin["id"],
+                    recipient_id=admin["_doc_id"],
                     title="Work Order Permit Awaiting Approval",
                     message=f"New permit request from {contractor_name}: {work_description}",
                     related_entity_type="work_order_permit",
@@ -788,7 +788,7 @@ class NotificationManager:
             for admin in admin_users:
                 await self.create_notification(
                     notification_type=NotificationType.PERMIT_EXPIRING,
-                    recipient_id=admin["id"],
+                    recipient_id=admin["_doc_id"],
                     title="Work Order Permit Expiring Soon",
                     message=f"Permit for {contractor_name} expires in {days_until_expiry} days ({expiry_text}).",
                     related_entity_type="work_order_permit",
@@ -821,7 +821,7 @@ class NotificationManager:
             for admin in admin_users:
                 await self.create_notification(
                     notification_type=NotificationType.MAINTENANCE_COMPLETED,
-                    recipient_id=admin["id"],
+                    recipient_id=admin["_doc_id"],
                     title="Work Order Permit Completed",
                     message=f"Work order permit for {contractor_name} has been marked as completed by the tenant.{notes_text}",
                     related_entity_type="work_order_permit",
@@ -841,84 +841,6 @@ class NotificationManager:
     # ═══════════════════════════════════════════════════════════════════════════
     # MAINTENANCE TASK NOTIFICATIONS
     # ═══════════════════════════════════════════════════════════════════════════
-    
-    async def notify_maintenance_task_assigned(
-        self,
-        task_id: str,
-        staff_id: str,
-        task_title: str,
-        location: str,
-        scheduled_date: Optional[datetime] = None,
-        assigned_by: Optional[str] = None
-    ) -> bool:
-        """Notify when maintenance task is assigned to staff"""
-        try:
-            print(f"\n[NOTIF_MGR] notify_maintenance_task_assigned called")
-            print(f"[NOTIF_MGR] task_id={task_id}, staff_id={staff_id}")
-            print(f"[NOTIF_MGR] scheduled_date={scheduled_date} (type={type(scheduled_date).__name__})")
-            
-            # Handle scheduled_date - could be datetime, string, or Firestore Timestamp
-            schedule_text = ""
-            if scheduled_date:
-                try:
-                    # If it's a Firestore Timestamp object, convert to datetime
-                    if hasattr(scheduled_date, 'strftime'):
-                        local_scheduled = _convert_to_local_time(scheduled_date)
-                        schedule_text = f" scheduled for {local_scheduled.strftime('%Y-%m-%d')}"
-                        print(f"[NOTIF_MGR] Used strftime method (converted to local): {schedule_text}")
-                    elif isinstance(scheduled_date, str):
-                        # Parse ISO format string
-                        try:
-                            dt = datetime.fromisoformat(scheduled_date.replace('Z', '+00:00'))
-                            local_dt = _convert_to_local_time(dt)
-                            schedule_text = f" scheduled for {local_dt.strftime('%Y-%m-%d')}"
-                            print(f"[NOTIF_MGR] Parsed ISO string (converted to local): {schedule_text}")
-                        except:
-                            schedule_text = f" scheduled for {scheduled_date[:10]}"
-                            print(f"[NOTIF_MGR] Used string substring: {schedule_text}")
-                    else:
-                        # Try to convert to string
-                        schedule_text = f" scheduled for {str(scheduled_date)[:10]}"
-                        print(f"[NOTIF_MGR] Converted to string: {schedule_text}")
-                except Exception as date_error:
-                    print(f"[NOTIF_MGR] Date formatting warning: {str(date_error)}")
-                    logger.warning(f"Could not format scheduled_date {scheduled_date}: {str(date_error)}")
-            
-            print(f"[NOTIF_MGR] Final schedule_text: '{schedule_text}'")
-            logger.info(f"Notifying staff {staff_id} about maintenance task {task_id}: {task_title}")
-            
-            print(f"[NOTIF_MGR] Calling create_notification...")
-            success, notification_id, error = await self.create_notification(
-                notification_type=NotificationType.MAINTENANCE_TASK_ASSIGNED,
-                recipient_id=staff_id,
-                title="Maintenance Task Assigned",
-                message=f"You have been assigned a maintenance task: {task_title} at {location}{schedule_text}.",
-                sender_id=assigned_by,
-                related_entity_type="maintenance_task",
-                related_entity_id=task_id,
-                priority=NotificationPriority.HIGH,
-                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
-                action_url=f"{settings.FRONTEND_URL}/#/maintenance/{task_id}",
-                action_label="View Task",
-                requires_action=True
-            )
-            
-            print(f"[NOTIF_MGR] create_notification result: success={success}, notification_id={notification_id}, error={error}")
-            if success:
-                print(f"[NOTIF_MGR] ✓ Notification created successfully (ID: {notification_id}), returning True")
-                logger.info(f"Successfully created maintenance task notification {notification_id} for staff {staff_id}")
-                return True
-            else:
-                print(f"[NOTIF_MGR] ✗ create_notification failed: {error}")
-                logger.error(f"Failed to create maintenance task notification for staff {staff_id}: {error}")
-                return False
-            
-        except Exception as e:
-            print(f"[NOTIF_MGR] EXCEPTION: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
-            logger.error(f"Error sending maintenance task assigned notification: {str(e)}", exc_info=True)
-            return False
     
     async def notify_maintenance_overdue(
         self,
@@ -967,7 +889,7 @@ class NotificationManager:
             for admin in admin_users:
                 await self.create_notification(
                     notification_type=NotificationType.MAINTENANCE_OVERDUE,
-                    recipient_id=admin["id"],
+                    recipient_id=admin["_doc_id"],
                     title="Overdue Maintenance Task",
                     message=f"Maintenance task '{task_title}' at {location} is {days_overdue} days overdue.",
                     related_entity_type="maintenance_task",
@@ -994,28 +916,62 @@ class NotificationManager:
     ) -> bool:
         """Notify when maintenance task is completed"""
         try:
+            logger.info(f"notify_maintenance_completed called for task {task_id}")
+            
             notes_text = f" Notes: {completion_notes}" if completion_notes else ""
             
             # Notify all admins
             admin_users = await self._get_users_by_role("admin")
-            for admin in admin_users:
-                await self.create_notification(
-                    notification_type=NotificationType.MAINTENANCE_COMPLETED,
-                    recipient_id=admin["id"],
-                    title="Maintenance Task Completed",
-                    message=f"Maintenance task '{task_title}' at {location} has been completed.{notes_text}",
-                    sender_id=completed_by,
-                    related_entity_type="maintenance_task",
-                    related_entity_id=task_id,
-                    channels=[NotificationChannel.IN_APP],
-                    action_url=f"/admin/maintenance/{task_id}",
-                    action_label="View Report"
-                )
+            logger.info(f"Found {len(admin_users)} admin(s)")
             
-            return True
+            if not admin_users:
+                logger.warning(f"No admin users found to notify about maintenance completion for task {task_id}")
+                return False
+            
+            success_count = 0
+            for admin in admin_users:
+                try:
+                    # Handle both id and _doc_id field names
+                    admin_id = admin.get("id") or admin.get("_doc_id")
+                    if not admin_id:
+                        logger.warning(f"Admin user has no id or _doc_id: {admin}")
+                        continue
+                    
+                    logger.info(f"Creating notification for admin {admin_id}")
+                    success, notif_id, error = await self.create_notification(
+                        notification_type=NotificationType.MAINTENANCE_COMPLETED,
+                        recipient_id=admin_id,
+                        title="Maintenance Task Completed",
+                        message=f"Maintenance task '{task_title}' at {location} has been completed.{notes_text}",
+                        sender_id=completed_by,
+                        related_entity_type="maintenance_task",
+                        related_entity_id=task_id,
+                        channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
+                        action_url=f"/admin/maintenance/{task_id}",
+                        action_label="View Report",
+                        priority=NotificationPriority.HIGH,
+                        requires_action=True
+                    )
+                    
+                    if success:
+                        success_count += 1
+                        logger.info(f"Sent maintenance completion notification {notif_id} to admin {admin_id}")
+                    else:
+                        logger.error(f"Failed to create notification for admin {admin_id}: {error}")
+                        
+                except Exception as admin_error:
+                    logger.error(f"Error notifying admin {admin}: {str(admin_error)}")
+            
+            logger.info(f"Maintenance completion: {success_count}/{len(admin_users)} admins notified")
+            if success_count > 0:
+                logger.info(f"Successfully notified {success_count} admin(s) about maintenance task {task_id} completion")
+                return True
+            else:
+                logger.error(f"Failed to notify any admins about maintenance task {task_id} completion")
+                return False
             
         except Exception as e:
-            logger.error(f"Error sending maintenance completed notifications: {str(e)}")
+            logger.error(f"Error sending maintenance completed notifications: {str(e)}", exc_info=True)
             return False
     
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1046,7 +1002,7 @@ class NotificationManager:
             for staff in inventory_staff:
                 await self.create_notification(
                     notification_type=notification_type,
-                    recipient_id=staff["id"],
+                    recipient_id=staff["_doc_id"],
                     title=f"{alert_level} Stock Alert",
                     message=f"{alert_level}: {item_name} is running low (Current: {current_stock}, Reorder at: {reorder_level}). Immediate restocking required.",
                     related_entity_type="inventory",
@@ -1065,7 +1021,7 @@ class NotificationManager:
             for admin in admin_users:
                 await self.create_notification(
                     notification_type=notification_type,
-                    recipient_id=admin["id"],
+                    recipient_id=admin["_doc_id"],
                     title=f"{alert_level} Stock Alert",
                     message=f"{alert_level}: {item_name} requires restocking (Current: {current_stock}).",
                     related_entity_type="inventory",
@@ -1100,7 +1056,7 @@ class NotificationManager:
             for staff in inventory_staff:
                 await self.create_notification(
                     notification_type=NotificationType.INVENTORY_RESTOCKED,
-                    recipient_id=staff["id"],
+                    recipient_id=staff["_doc_id"],
                     title="Inventory Restocked",
                     message=f"{item_name} has been restocked. New stock level: {new_stock_level}.",
                     sender_id=restocked_by,
@@ -1117,7 +1073,7 @@ class NotificationManager:
             for admin in admin_users:
                 await self.create_notification(
                     notification_type=NotificationType.INVENTORY_RESTOCKED,
-                    recipient_id=admin["id"],
+                    recipient_id=admin["_doc_id"],
                     title="Inventory Restocked",
                     message=f"{item_name} has been restocked to {new_stock_level} units.",
                     sender_id=restocked_by,
@@ -1172,11 +1128,11 @@ class NotificationManager:
             
             # Get admin users
             admin_users = await self._get_users_by_role("admin")
-            recipients.extend([admin["id"] for admin in admin_users])
+            recipients.extend([admin["_doc_id"] for admin in admin_users])
             
             # Get inventory staff
             inventory_staff = await self._get_users_by_department("inventory")
-            recipients.extend([staff["id"] for staff in inventory_staff])
+            recipients.extend([staff["_doc_id"] for staff in inventory_staff])
             
             # Remove duplicates
             recipients = list(set(recipients))
@@ -2127,58 +2083,84 @@ class NotificationManager:
     async def notify_maintenance_task_assigned(
         self,
         task_id: str,
-        task_title: str,
-        assignee_id: str,
-        assigned_by: str,
-        location: str,
+        task_title: Optional[str] = None,
+        staff_id: Optional[str] = None,
+        assignee_id: Optional[str] = None,
+        location: Optional[str] = None,
+        assigned_by: Optional[str] = None,
         scheduled_date: Optional[datetime] = None,
         priority: str = "medium"
     ) -> bool:
-        """Notify staff when a maintenance task is assigned to them"""
+        """Notify staff when a maintenance task is assigned to them
+        
+        Supports both calling conventions:
+        - notify_maintenance_task_assigned(task_id, staff_id, task_title, location, scheduled_date, assigned_by)
+        - notify_maintenance_task_assigned(task_id, task_title, assignee_id, assigned_by, location, scheduled_date, priority)
+        """
         try:
-            # Get assignee details
-            assignee = await self._get_user_details(assignee_id)
-            assignee_name = f"{assignee.get('first_name', '')} {assignee.get('last_name', '')}".strip()
-
-            # Get assigner details
-            assigner = await self._get_user_details(assigned_by)
-            assigner_name = f"{assigner.get('first_name', '')} {assigner.get('last_name', '')}".strip()
-
+            # Support both parameter naming conventions
+            recipient_id = staff_id or assignee_id
+            if not recipient_id:
+                raise ValueError("Either staff_id or assignee_id must be provided")
+            
+            # Handle scheduled_date - could be datetime, string, or Firestore Timestamp
             schedule_text = ""
             if scheduled_date:
-                schedule_text = f" Scheduled for {scheduled_date.strftime('%Y-%m-%d %H:%M')}."
-
-            priority_text = f" Priority: {priority.title()}."
-
-            await self.create_notification(
+                try:
+                    if hasattr(scheduled_date, 'strftime'):
+                        local_scheduled = _convert_to_local_time(scheduled_date)
+                        schedule_text = f" scheduled for {local_scheduled.strftime('%Y-%m-%d')}"
+                    elif isinstance(scheduled_date, str):
+                        try:
+                            # Handle ISO format strings with Z timezone indicator
+                            date_str = scheduled_date
+                            if isinstance(date_str, str) and date_str.endswith('Z'):
+                                date_str = date_str[:-1] + '+00:00'
+                            dt = datetime.fromisoformat(date_str)
+                            local_dt = _convert_to_local_time(dt)
+                            schedule_text = f" scheduled for {local_dt.strftime('%Y-%m-%d %H:%M')}"
+                        except:
+                            schedule_text = f" scheduled for {str(scheduled_date)[:10]}"
+                    else:
+                        schedule_text = f" scheduled for {str(scheduled_date)[:10]}"
+                except Exception as date_error:
+                    logger.warning(f"Could not format scheduled_date {scheduled_date}: {str(date_error)}")
+            
+            logger.info(f"Notifying staff {recipient_id} about maintenance task {task_id}: {task_title}")
+            
+            success, notification_id, error = await self.create_notification(
                 notification_type=NotificationType.MAINTENANCE_TASK_ASSIGNED,
-                recipient_id=assignee_id,
+                recipient_id=recipient_id,
                 title="Maintenance Task Assigned",
-                message=f"You have been assigned maintenance task '{task_title}' at {location}.{schedule_text}{priority_text}",
+                message=f"You have been assigned maintenance task '{task_title}' at {location}.{schedule_text} Priority: {priority.title()}." if schedule_text else f"You have been assigned maintenance task '{task_title}' at {location}. Priority: {priority.title()}.",
                 sender_id=assigned_by,
                 related_entity_type="maintenance_task",
                 related_entity_id=task_id,
-                priority=NotificationPriority.HIGH if priority in ["high", "critical"] else NotificationPriority.MEDIUM,
+                priority=NotificationPriority.HIGH if priority in ["high", "critical"] else NotificationPriority.NORMAL,
                 channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
-                action_url=f"/maintenance/{task_id}",
+                action_url=f"{settings.FRONTEND_URL}/#/maintenance/{task_id}" if hasattr(settings, 'FRONTEND_URL') else f"/maintenance/{task_id}",
                 action_label="View Task Details",
                 requires_action=True,
                 custom_data={
                     "task_id": task_id,
                     "task_title": task_title,
                     "location": location,
-                    "scheduled_date": scheduled_date.isoformat() if scheduled_date else None,
+                    "scheduled_date": scheduled_date.isoformat() if scheduled_date and hasattr(scheduled_date, 'isoformat') else str(scheduled_date),
                     "priority": priority,
-                    "assigned_by": assigner_name
+                    "assigned_by": assigned_by
                 },
                 expires_at=datetime.utcnow() + timedelta(days=7)
             )
 
-            logger.info(f"Sent maintenance task assignment notification to {assignee_name} ({assignee_id}) for task {task_id}")
-            return True
+            if success:
+                logger.info(f"Sent maintenance task assignment notification (ID: {notification_id}) to staff {recipient_id} for task {task_id}")
+                return True
+            else:
+                logger.error(f"Failed to create maintenance task notification for staff {recipient_id}: {error}")
+                return False
 
         except Exception as e:
-            logger.error(f"Error sending maintenance task assignment notification: {str(e)}")
+            logger.error(f"Error sending maintenance task assignment notification: {str(e)}", exc_info=True)
             return False
 
     async def notify_inventory_replacement_requested(

@@ -12,6 +12,7 @@ from app.services.maintenance_task_service import maintenance_task_service
 from app.services.special_maintenance_service import special_maintenance_service
 from app.services.user_id_service import UserIdService, user_id_service
 from app.services.notification_manager import notification_manager
+from app.models.notification_models import NotificationType, NotificationPriority, NotificationChannel
 from app.services.task_type_service import task_type_service
 from app.services.inventory_service import inventory_service
 from app.database.collections import COLLECTIONS
@@ -363,6 +364,12 @@ class MaintenanceTaskAssign(BaseModel):
     staff_id: str
     scheduled_date: Optional[datetime] = None
     notes: Optional[str] = None
+
+
+class SubmitAssessmentRequest(BaseModel):
+    """Model for staff to submit assessment for a maintenance task"""
+    assessment: str
+    assessment_notes: Optional[str] = None
 
 
 async def _serialize_task(task: MaintenanceTask) -> Dict[str, Any]:
@@ -778,6 +785,11 @@ async def update_maintenance_task(
 ):
     """Update an existing maintenance task."""
     print(f"\n[PUT ENDPOINT CALLED] task_id={task_id}, updates={updates.dict(exclude_unset=True)}")
+    update_dict_raw = updates.dict(exclude_unset=True)
+    logger.info(f"[PUT ENDPOINT] Received update for task {task_id}")
+    logger.info(f"[PUT ENDPOINT] Fields being updated: {list(update_dict_raw.keys())}")
+    for key, value in update_dict_raw.items():
+        logger.debug(f"[PUT ENDPOINT]   {key}: {value}")
     try:
         if current_user.get("role") not in {"admin", "staff"}:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -884,6 +896,58 @@ async def update_maintenance_task(
                 print(traceback.format_exc())
                 logger.error(f"Error sending maintenance task notification: {str(notif_error)}", exc_info=True)
 
+        # Send notification to admins when assessment is submitted by staff
+        # Check for either assessment_received field being set OR assessment content being provided
+        has_assessment_received = "assessment_received" in update_dict and update_dict["assessment_received"]
+        has_assessment_content = "assessment" in update_dict and update_dict["assessment"]
+        
+        logger.info(f"[PUT ENDPOINT] Assessment check - has_assessment_received={has_assessment_received}, has_assessment_content={has_assessment_content}")
+        logger.info(f"[PUT ENDPOINT] assessment_received value: {update_dict.get('assessment_received', 'NOT_PRESENT')}")
+        logger.info(f"[PUT ENDPOINT] assessment value: {update_dict.get('assessment', 'NOT_PRESENT')}")
+        
+        if has_assessment_received or has_assessment_content:
+            try:
+                logger.info(f"[PUT ENDPOINT] Assessment submitted for task {task_id}")
+                task_title = getattr(updated, "task_title", "Maintenance Task")
+                location = getattr(updated, "location", "Unknown Location")
+                assessment = update_dict.get("assessment") or getattr(updated, "assessment", None)
+                staff_name = current_user.get("name") or current_user.get("uid")
+                
+                logger.info(f"[PUT ENDPOINT] Assessment submitted for '{task_title}' at {location}")
+                logger.info(f"[PUT ENDPOINT] Submitted by: {staff_name}")
+                
+                # Get all admins to notify
+                admin_users = await notification_manager._get_users_by_role("admin")
+                logger.info(f"[PUT ENDPOINT] Found {len(admin_users)} admin(s) to notify about assessment")
+                
+                for admin in admin_users:
+                    try:
+                        admin_id = admin.get("id") or admin.get("_doc_id")
+                        if not admin_id:
+                            continue
+                        
+                        logger.info(f"[PUT ENDPOINT] Creating assessment notification for admin {admin_id}")
+                        success, notif_id, error = await notification_manager.create_notification(
+                            notification_type=NotificationType.MAINTENANCE_COMPLETED,
+                            recipient_id=admin_id,
+                            title="Maintenance Assessment Submitted",
+                            message=f"Assessment submitted for '{task_title}' at {location} by {staff_name}",
+                            sender_id=current_user.get("uid"),
+                            related_entity_type="maintenance_task",
+                            related_entity_id=task_id,
+                            channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
+                            action_url=f"/admin/maintenance/{task_id}",
+                            action_label="Review Assessment",
+                            priority=NotificationPriority.HIGH,
+                            requires_action=True
+                        )
+                        if success:
+                            logger.info(f"[PUT ENDPOINT] Assessment notification {notif_id} sent to admin {admin_id}")
+                    except Exception as admin_error:
+                        logger.warning(f"[PUT ENDPOINT] Failed to notify admin {admin.get('id')}: {str(admin_error)}")
+            except Exception as assessment_error:
+                logger.error(f"[PUT ENDPOINT] Error sending assessment notification for task {task_id}: {str(assessment_error)}", exc_info=True)
+
         return {
             "success": True,
             "message": "Maintenance task updated successfully",
@@ -925,6 +989,134 @@ async def delete_maintenance_task(
     except Exception as exc:  # pragma: no cover
         logger.error("Unexpected error deleting maintenance task %s: %s", task_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to delete maintenance task: {exc}")
+
+
+@router.patch("/{task_id}/submit-assessment")
+async def submit_assessment(
+    task_id: str,
+    request: SubmitAssessmentRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Submit assessment for a maintenance task (Staff or Admin)."""
+    print(f"\n[SUBMIT ASSESSMENT DEBUG] current_user={current_user}")
+    print(f"[SUBMIT ASSESSMENT DEBUG] current_user type={type(current_user)}")
+    
+    if not current_user:
+        logger.error(f"[SUBMIT ASSESSMENT] 403 - No current_user")
+        raise HTTPException(status_code=403, detail="Not authenticated")
+    
+    user_role = current_user.get("role") if isinstance(current_user, dict) else None
+    user_uid = current_user.get("uid") if isinstance(current_user, dict) else None
+    
+    print(f"[SUBMIT ASSESSMENT DEBUG] user_role={user_role}, user_uid={user_uid}")
+    logger.info(f"[SUBMIT ASSESSMENT] Received from user {user_uid} with role: {user_role}")
+    logger.info(f"[SUBMIT ASSESSMENT] Assessment data: {request.dict()}")
+    
+    try:
+        if user_role not in {"admin", "staff"}:
+            logger.error(f"[SUBMIT ASSESSMENT] 403 - Role {user_role} not in allowed roles")
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Get the task
+        task = await maintenance_task_service.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+        
+        # Verify staff is assigned to this task (admins can submit for any task)
+        if user_role == "staff":
+            # Get staff's profile to get their staff_id
+            try:
+                staff_profile = await user_id_service.get_user_profile(user_uid)
+                staff_id = staff_profile.staff_id if staff_profile else None
+            except:
+                staff_id = None
+            
+            print(f"[SUBMIT ASSESSMENT DEBUG] task.assigned_to={task.assigned_to}")
+            print(f"[SUBMIT ASSESSMENT DEBUG] current_user uid={user_uid}")
+            print(f"[SUBMIT ASSESSMENT DEBUG] staff_id from profile={staff_id}")
+            print(f"[SUBMIT ASSESSMENT DEBUG] Comparing: '{task.assigned_to}' vs '{staff_id}'")
+            
+            if task.assigned_to != staff_id and task.assigned_to != user_uid:
+                logger.error(f"[SUBMIT ASSESSMENT] 403 - Staff user {user_uid} (staff_id={staff_id}) not assigned to task {task_id}")
+                print(f"[SUBMIT ASSESSMENT DEBUG] Assignment check FAILED")
+                raise HTTPException(status_code=403, detail="You can only submit assessment for tasks assigned to you")
+        
+        # Prepare update data
+        update_dict = {
+            "assessment_received": True,
+            "assessment_date": datetime.utcnow(),
+            "assessment": request.assessment,
+            "assessment_notes": request.assessment_notes,
+            "updated_at": datetime.utcnow(),
+        }
+        
+        logger.info(f"[SUBMIT ASSESSMENT] Updating task with: {update_dict}")
+        
+        # Update the task
+        updated = await maintenance_task_service.update_task(task_id, update_dict)
+        
+        # If update_task returns None, fetch the updated task
+        if not updated:
+            updated = await maintenance_task_service.get_task(task_id)
+        
+        logger.info(f"[SUBMIT ASSESSMENT] Task updated successfully")
+        
+        # Send notification to admins
+        try:
+            logger.info(f"[SUBMIT ASSESSMENT] Getting admins to notify")
+            admin_users = await notification_manager._get_users_by_role("admin")
+            logger.info(f"[SUBMIT ASSESSMENT] Found {len(admin_users)} admin(s)")
+            
+            # Use task object (not updated) since it has all the data
+            task_title = task.task_title or "Maintenance Task"
+            location = task.location or "Unknown Location"
+            staff_name = current_user.get("name") or current_user.get("uid")
+            assessment = update_dict.get("assessment", "")
+            
+            print(f"[SUBMIT ASSESSMENT DEBUG] Notification - task_title={task_title}, location={location}, staff_name={staff_name}")
+            
+            for admin in admin_users:
+                try:
+                    admin_id = admin.get("id") or admin.get("_doc_id")
+                    if not admin_id:
+                        logger.warning(f"[SUBMIT ASSESSMENT] Admin has no id field: {admin}")
+                        continue
+                    
+                    logger.info(f"[SUBMIT ASSESSMENT] Sending notification to admin {admin_id}")
+                    success, notif_id, error = await notification_manager.create_notification(
+                        notification_type=NotificationType.MAINTENANCE_COMPLETED,
+                        recipient_id=admin_id,
+                        title="Maintenance Task Completed",
+                        message=f"Maintenance task '{task_title}' at {location} has been completed by {staff_name}",
+                        sender_id=current_user.get("uid"),
+                        related_entity_type="maintenance_task",
+                        related_entity_id=task_id,
+                        channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.EMAIL],
+                        action_url=f"/admin/maintenance/{task_id}",
+                        action_label="Review Assessment",
+                        priority=NotificationPriority.HIGH,
+                        requires_action=True
+                    )
+                    if success:
+                        logger.info(f"[SUBMIT ASSESSMENT] Notification {notif_id} sent to admin {admin_id}")
+                    else:
+                        logger.warning(f"[SUBMIT ASSESSMENT] Failed to send notification to admin {admin_id}: {error}")
+                except Exception as admin_error:
+                    logger.error(f"[SUBMIT ASSESSMENT] Error notifying admin {admin.get('id')}: {str(admin_error)}", exc_info=True)
+        except Exception as notif_error:
+            logger.error(f"[SUBMIT ASSESSMENT] Error in notification process: {str(notif_error)}", exc_info=True)
+        
+        return {
+            "success": True,
+            "message": "Assessment submitted successfully",
+            "task": await _serialize_task(updated) if updated else {"id": task_id, "message": "Task updated successfully"},
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[SUBMIT ASSESSMENT] Error submitting assessment for task {task_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to submit assessment: {str(exc)}")
 
 
 class ChecklistItemUpdate(BaseModel):
@@ -1140,18 +1332,19 @@ async def update_maintenance_checklist(
         
         update_data = {"checklist_completed": checklist_data.checklist_completed}
         
+        logger.info(f"Checklist update for task {task_id}: {completed_items}/{total_items} items completed")
+        
         # Auto-update status based on checklist completion
         if total_items > 0:
             if completed_items == total_items:
                 # All items completed
                 update_data["status"] = "completed"
                 update_data["completed_at"] = datetime.now()
-                logger.info("All checklist items completed for task %s, setting status to 'completed'", task_id)
+                logger.info(f"All checklist items completed for task {task_id}, setting status to 'completed'")
             elif completed_items > 0:
                 # Some items completed - set to in_progress
                 update_data["status"] = "in_progress"
-                logger.info("Checklist progress for task %s: %d/%d items completed, setting status to 'in_progress'", 
-                           task_id, completed_items, total_items)
+                logger.info(f"Checklist progress for task {task_id}: {completed_items}/{total_items} items completed, setting status to 'in_progress'")
 
         # Update the task with the new checklist and status
         updated_task = await maintenance_task_service.update_task(
