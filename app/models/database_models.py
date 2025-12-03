@@ -96,7 +96,7 @@ class InventoryRequest(BaseModel):
     quantity_approved: Optional[int] = None
     purpose: str  # job_service, maintenance, emergency, etc.
     reference_id: Optional[str] = None  # job_service_id or maintenance_task_id
-    priority: str = Field(default="normal")  # low, normal, high, urgent
+    priority: str = Field(default="")  # low, medium, high, urgent
     status: str = Field(default="pending")  # pending, approved, denied, received
     admin_notes: Optional[str] = None
     date_needed: Optional[datetime] = None  # When the item is needed by
@@ -115,9 +115,10 @@ class InventoryReservation(BaseModel):
     quantity: int  # Change from quantity_reserved
     current_stock: int  # Stock level at time of reservation
     purpose: str = Field(default="")
-    status: str = Field(default="reserved")  # reserved, received
+    status: str = Field(default="reserved")  # reserved, received, returned, partially_returned
     reserved_at: Optional[datetime] = None
     received_at: Optional[datetime] = None
+    returned_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # Defective item tracking
@@ -125,6 +126,29 @@ class InventoryReservation(BaseModel):
     defective_reason: Optional[str] = None
     replacement_requested: bool = Field(default=False)
     replacement_request_id: Optional[str] = None
+    # Return tracking
+    quantity_returned: Optional[int] = Field(default=0)
+    return_notes: Optional[str] = None
+    returned_by: Optional[str] = None
+
+class InventoryReturn(BaseModel):
+    """Tracks returns of inventory items from reservations"""
+    id: Optional[str] = None
+    reservation_id: str  # Links back to the original reservation
+    inventory_id: str  # Item code being returned
+    maintenance_task_id: str  # Associated maintenance task
+    quantity_returned: int  # Amount being returned
+    unit: str  # Unit of measure (pcs, liters, etc.)
+    stock_at_return: int  # Stock level at time of return
+    date_returned: Optional[datetime] = None  # When items were returned
+    notes: Optional[str] = None  # Additional notes about the return
+    returned_by: str  # Staff member who returned the items
+    returned_by_name: Optional[str] = None  # Display name of staff
+    status: str = Field(default="completed")  # completed, pending_verification
+    verified_by: Optional[str] = None  # Admin who verified the return
+    verified_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 class LowStockAlert(BaseModel):
     id: Optional[str] = None

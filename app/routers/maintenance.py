@@ -246,7 +246,7 @@ def _compute_next_due_date(start_date: datetime, recurrence_type: str) -> Option
         return None
 class MaintenanceTaskCreate(BaseModel):
     building_id: str
-    task_title: str
+    task_title: Optional[str] = None  # Optional - will use task type name if not provided
     task_description: str
     location: str
     scheduled_date: datetime
@@ -658,6 +658,20 @@ async def create_maintenance_task(
 
         # Convert to dict
         task_dict = task_data.dict(exclude_unset=True)
+        
+        # If task_title is not provided and task_type_id exists, use the task type name
+        if not task_dict.get("task_title") and task_dict.get("task_type_id"):
+            try:
+                success, task_type_data, error = await task_type_service.get_task_type(task_dict["task_type_id"])
+                if success and task_type_data:
+                    task_dict["task_title"] = task_type_data.get("name", "Maintenance Task")
+                    logger.info(f"Using task type name as title: {task_dict['task_title']}")
+            except Exception as e:
+                logger.warning(f"Could not fetch task type name: {str(e)}")
+                task_dict["task_title"] = "Maintenance Task"
+        elif not task_dict.get("task_title"):
+            # Fallback if no task_title and no task_type_id
+            task_dict["task_title"] = "Maintenance Task"
 
         # Auto-compute next_occurrence (next_due_date) if recurrence and scheduled_date are provided
         scheduled_date = task_dict.get("scheduled_date")

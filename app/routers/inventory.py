@@ -635,10 +635,12 @@ async def return_inventory_request(
 async def return_reservation(
     reservation_id: str,
     quantity: Optional[int] = Query(None, description="Quantity to return; defaults to reservation quantity"),
+    date_returned: Optional[datetime] = Query(None, description="Date when items were returned"),
+    notes: Optional[str] = Query(None, description="Additional notes about the return"),
     current_user: Dict[str, Any] = Depends(get_current_user),
     _: None = Depends(require_role(["admin", "staff"]))
 ):
-    """Return items from a reservation to stock."""
+    """Return items from a reservation to stock with full tracking."""
     try:
         # Staff can only return reservations created by admin
         if current_user.get('role') == 'staff':
@@ -651,10 +653,21 @@ async def return_reservation(
             origin_profile = await user_id_service.get_user_profile(origin_uid)
             if not origin_profile or origin_profile.role != 'admin':
                 raise HTTPException(status_code=403, detail='Staff can only operate on admin-created reservations')
+        
         from ..services.inventory_service import inventory_service
-        success, error = await inventory_service.return_reservation(reservation_id, current_user["uid"], quantity)
+        success, return_data, error = await inventory_service.return_reservation(
+            reservation_id, 
+            current_user["uid"], 
+            quantity,
+            date_returned,
+            notes
+        )
         if success:
-            return {"success": True, "message": "Reservation returned and stock updated"}
+            return {
+                "success": True, 
+                "message": "Reservation returned and stock updated",
+                "data": return_data
+            }
         else:
             raise HTTPException(status_code=400, detail=error)
     except HTTPException:

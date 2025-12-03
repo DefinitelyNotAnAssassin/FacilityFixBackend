@@ -2,7 +2,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
-from app.services.user_id_service import UserIdService
+from app.services.user_id_service import user_id_service
 from ..models.database_models import (
     Inventory, InventoryTransaction, InventoryRequest, InventoryReservation,
     LowStockAlert, InventoryUsageAnalytics
@@ -1398,11 +1398,30 @@ class InventoryService:
             
             current_stock = item_data.get('current_stock', 0)
             
+            # IMPORTANT: Always use item_code, not the document ID
+            item_code = item_data.get('item_code') or item_data.get('id') or inventory_id
+            maintenance_task_id = reservation_data['maintenance_task_id']
+            
+            # Check if reservation already exists for this item and task
+            existing_success, existing_reservations, _ = await self.db.query_documents(
+                COLLECTIONS['inventory_reservations'],
+                [
+                    ('maintenance_task_id', '==', maintenance_task_id),
+                    ('inventory_id', '==', item_code),
+                    ('status', '==', 'reserved')
+                ]
+            )
+            
+            if existing_success and existing_reservations:
+                existing_id = existing_reservations[0].get('id') or existing_reservations[0].get('_doc_id')
+                logger.info(f"Reservation already exists: {existing_id} for item {item_code} and task {maintenance_task_id}")
+                return True, existing_id, None  # Return existing reservation instead of creating duplicate
+            
             # Prepare data with correct fields
             data = {
-                'inventory_id': inventory_id,  # Should be item code from frontend
+                'inventory_id': item_code,  # Use actual item_code, not document ID
                 'created_by': reserved_by,
-                'maintenance_task_id': reservation_data['maintenance_task_id'],
+                'maintenance_task_id': maintenance_task_id,
                 'quantity': reservation_data['quantity'],  # Use 'quantity'
                 'current_stock': current_stock,  # Add current stock at time of reservation
                 'purpose': 'maintenance',
@@ -1419,7 +1438,7 @@ class InventoryService:
             )
             
             if success:
-                logger.info(f"Inventory reservation created: {reservation_id}")
+                logger.info(f"Inventory reservation created: {reservation_id} for item_code: {item_code}")
             
             return success, reservation_id, error
             
@@ -1445,6 +1464,7 @@ class InventoryService:
                 reservations = []
                 for doc in documents:
                     reservations.append({
+                        'id': doc.get('_doc_id'),  # Firestore document ID
                         'inventory_id': doc.get('inventory_id'),  # Item code
                         'quantity': doc.get('quantity') or doc.get('quantity_reserved'),  # Handle both old and new field names
                         'current_stock': doc.get('current_stock', 0),  # Stock level at time of reservation
@@ -1653,47 +1673,142 @@ class InventoryService:
             logger.error(f"Error returning inventory for request {request_id}: {str(e)}")
             return False, str(e)
 
-    async def return_reservation(self, reservation_id: str, returned_by: str, quantity: Optional[int] = None) -> Tuple[bool, Optional[str]]:
-        """Return items for a reservation back to inventory and mark reservation released/returned"""
+    async def return_reservation(
+        self, 
+        reservation_id: str, 
+        returned_by: str, 
+        quantity: Optional[int] = None,
+        date_returned: Optional[datetime] = None,
+        notes: Optional[str] = None
+    ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Return items for a reservation back to inventory with full tracking"""
         try:
+            # Get reservation data
             success, reservation_data, error = await self.db.get_document(COLLECTIONS['inventory_reservations'], reservation_id)
             if not success or not reservation_data:
-                return False, f"Reservation not found: {error}"
+                return False, None, f"Reservation not found: {error}"
+
+            # Validate reservation status
+            if reservation_data.get('status') != 'received':
+                return False, None, "Can only return items that have been received"
 
             inventory_id = reservation_data.get('inventory_id')
-            qty = int(quantity or reservation_data.get('quantity', 0))
-            if qty <= 0:
-                return False, "Invalid quantity to return"
+            reserved_qty = reservation_data.get('quantity', 0)
+            qty_to_return = int(quantity or reserved_qty)
+            
+            if qty_to_return <= 0:
+                return False, None, "Invalid quantity to return"
+            
+            if qty_to_return > reserved_qty:
+                return False, None, f"Cannot return more than reserved quantity ({reserved_qty})"
+
+            # Get current inventory item data
+            item_success, item_data, item_err = await self.get_inventory_item(inventory_id)
+            if not item_success:
+                return False, None, f"Inventory item not found: {item_err}"
+            
+            current_stock = item_data.get('current_stock', 0)
+            unit = item_data.get('unit_of_measure', 'pcs')
+            
+            # Get staff name
+            staff_profile = await user_id_service.get_user_profile(returned_by)
+            staff_name = f"{staff_profile.first_name} {staff_profile.last_name}" if staff_profile else "Unknown"
 
             # Restock the inventory
-            restock_success, restock_err = await self.restock_item(inventory_id, qty, returned_by, reason=f"Return from reservation {reservation_id}")
+            restock_success, restock_err = await self.restock_item(
+                inventory_id, 
+                qty_to_return, 
+                returned_by, 
+                reason=f"Return from reservation {reservation_id}"
+            )
             if not restock_success:
-                return False, f"Failed to restock item: {restock_err}"
+                return False, None, f"Failed to restock item: {restock_err}"
 
-            # Update reservation to 'released' (or 'returned' if needed), and restore reserved_quantity variance
-            # Decrease reserved_quantity if present
-            try:
-                item_success, item_data, item_err = await self.get_inventory_item(inventory_id)
-                if item_success and item_data:
-                    doc_id = item_data.get('_doc_id', inventory_id)
-                    current_reserved = item_data.get('reserved_quantity', 0) or 0
-                    new_reserved = max(0, current_reserved - qty)
-                    await self.update_inventory_item(doc_id, {'reserved_quantity': new_reserved, 'updated_at': datetime.utcnow()}, returned_by)
-            except Exception:
-                logger.debug('Failed to adjust reserved_quantity on inventory item after return')
+            # Get updated stock after return
+            updated_success, updated_item, _ = await self.get_inventory_item(inventory_id)
+            new_stock = updated_item.get('current_stock', current_stock) if updated_success else current_stock
 
-            # Update reservation to 'released' and set returned timestamp
-            update_data = {
-                'status': 'released',
-                'released_at': datetime.utcnow(),
-                'released_by': returned_by,
+            # Create InventoryReturn record
+            return_record = {
+                'reservation_id': reservation_id,
+                'inventory_id': inventory_id,
+                'maintenance_task_id': reservation_data.get('maintenance_task_id'),
+                'quantity_returned': qty_to_return,
+                'unit': unit,
+                'stock_at_return': new_stock,
+                'date_returned': date_returned or datetime.utcnow(),
+                'notes': notes,
+                'returned_by': returned_by,
+                'returned_by_name': staff_name,
+                'status': 'completed',
+                'created_at': datetime.utcnow(),
                 'updated_at': datetime.utcnow()
             }
-            success_u, err_u = await self.db.update_document(COLLECTIONS['inventory_reservations'], reservation_id, update_data)
-            return success_u, err_u
+            
+            return_success, return_id, return_error = await self.db.create_document(
+                COLLECTIONS['inventory_returns'],
+                return_record,
+                validate=True
+            )
+            
+            if not return_success:
+                logger.error(f"Failed to create return record: {return_error}")
+                # Continue anyway since stock was already updated
+
+            # Update reserved_quantity on inventory item
+            try:
+                doc_id = item_data.get('_doc_id', inventory_id)
+                current_reserved = item_data.get('reserved_quantity', 0) or 0
+                new_reserved = max(0, current_reserved - qty_to_return)
+                await self.update_inventory_item(
+                    doc_id, 
+                    {'reserved_quantity': new_reserved, 'updated_at': datetime.utcnow()}, 
+                    returned_by
+                )
+            except Exception as e:
+                logger.debug(f'Failed to adjust reserved_quantity: {e}')
+
+            # Update reservation status
+            already_returned = reservation_data.get('quantity_returned', 0)
+            total_returned = already_returned + qty_to_return
+            
+            new_status = 'returned' if total_returned >= reserved_qty else 'partially_returned'
+            
+            update_data = {
+                'status': new_status,
+                'quantity_returned': total_returned,
+                'returned_at': date_returned or datetime.utcnow(),
+                'return_notes': notes,
+                'returned_by': returned_by,
+                'updated_at': datetime.utcnow()
+            }
+            
+            success_u, err_u = await self.db.update_document(
+                COLLECTIONS['inventory_reservations'], 
+                reservation_id, 
+                update_data
+            )
+            
+            if not success_u:
+                return False, None, f"Failed to update reservation: {err_u}"
+
+            # Return success with all relevant data
+            return_data = {
+                'return_id': return_id,
+                'reservation_id': reservation_id,
+                'inventory_id': inventory_id,
+                'quantity_returned': qty_to_return,
+                'unit': unit,
+                'new_stock': new_stock,
+                'status': new_status,
+                'date_returned': (date_returned or datetime.utcnow()).isoformat()
+            }
+            
+            return True, return_data, None
+            
         except Exception as e:
             logger.error(f"Error returning reservation {reservation_id}: {str(e)}")
-            return False, str(e)
+            return False, None, str(e)
 
     async def request_replacement_for_defective_item(self, reservation_id: str, replacement_data: Dict[str, Any], requested_by: str) -> Tuple[bool, str, Optional[str]]:
         """Request replacement for a defective reserved item"""

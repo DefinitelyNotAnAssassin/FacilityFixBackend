@@ -2,7 +2,7 @@ from typing import Dict, Any, Optional, List
 from pydantic import ValidationError
 from app.models.database_models import (
     Building, Unit, UserProfile, Equipment, Inventory, InventoryTransaction,
-    InventoryRequest, InventoryReservation, LowStockAlert, InventoryUsageAnalytics,
+    InventoryRequest, InventoryReservation, InventoryReturn, LowStockAlert, InventoryUsageAnalytics,
     ConcernSlip, JobService, WorkOrderPermit, MaintenanceTask, Announcement, TaskType,
     StatusHistory, Feedback, Counter, Notification, FileAttachment
 )
@@ -22,6 +22,7 @@ class SchemaValidator:
         'inventory_transactions': InventoryTransaction,
         'inventory_requests': InventoryRequest,
         'inventory_reservations': InventoryReservation,
+        'inventory_returns': InventoryReturn,
         'low_stock_alerts': LowStockAlert,
         'inventory_usage_analytics': InventoryUsageAnalytics,
         'concern_slips': ConcernSlip,
