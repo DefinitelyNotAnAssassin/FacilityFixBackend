@@ -132,6 +132,7 @@ routers_to_load = [
     ("app.routers.work_order_permits", "Work Order Permits"),
     ("app.routers.tenant_requests", "Tenant Requests"),
     ("app.routers.inventory", "Inventory Management"),
+    ("app.routers.task_types", "Task Types"),
     ("app.routers.equipment", "Equipment Registry"),
     ("app.routers.maintenance_calendar", "Maintenance"),  # Update maintenance router to use /maintenance prefix instead of /maintenance-calendar
     ("app.routers.notifications", "Notifications"),

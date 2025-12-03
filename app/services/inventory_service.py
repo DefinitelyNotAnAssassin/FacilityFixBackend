@@ -1460,6 +1460,14 @@ class InventoryService:
             logger.error(f"Error getting inventory reservations: {str(e)}")
             return False, [], str(e)
 
+    async def get_inventory_reservation_by_id(self, reservation_id: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Get a single inventory reservation by document id"""
+        try:
+            return await self.db.get_document(COLLECTIONS['inventory_reservations'], reservation_id)
+        except Exception as e:
+            logger.error(f"Error getting reservation {reservation_id}: {e}")
+            return False, None, str(e)
+
     async def update_reservation_status(self, reservation_id: str, new_status: str, updated_by: str) -> Tuple[bool, Optional[str]]:
         """Update inventory reservation status"""
         try:
@@ -1565,6 +1573,128 @@ class InventoryService:
         """Mark reservation as received (staff has picked up the items)"""
         return await self.update_reservation_status(reservation_id, 'received', received_by)
 
+    async def mark_task_inventory_received(self, task_id: str, received_by: str, deduct_stock: bool = True) -> Tuple[bool, Optional[str]]:
+        """Mark all inventory requests/reservations associated with a maintenance task as received.
+
+        This will iterate over inventory_requests with maintenance_task_id==task_id and update
+        them to 'received'. For reservations, it will mark as received and deduct stock.
+        """
+        try:
+            # Handle inventory requests (created via reserve_item_for_task)
+            success, requests, error = await self.get_inventory_requests(maintenance_task_id=task_id)
+            if not success:
+                return False, error or "Failed to fetch inventory requests for task"
+
+            # Update each request to received; optionally deduct stock
+            for req in requests:
+                req_id = req.get('_doc_id') or req.get('id')
+                if not req_id:
+                    continue
+                update_data = {'status': 'received', 'deduct_stock': deduct_stock}
+                await self.update_inventory_request(req_id, update_data, received_by)
+
+            # Handle inventory reservations for tasks
+            success_r, reservations, err_r = await self.get_inventory_reservations({'maintenance_task_id': task_id})
+            if success_r and reservations:
+                for res in reservations:
+                    # Fetch reservation id (doc id not included in reservation view), attempt to find doc id using query
+                    # Query for reservation document with same fields
+                    # We'll attempt to match by maintenance_task_id + inventory_id + created_at
+                    # As a fallback, if 'id' present, use that
+                    reservation_id = None
+                    reservation_id = res.get('id') or res.get('_doc_id')
+                    if not reservation_id:
+                        # Query to find doc id using maintenance_task_id and inventory_id and status 'reserved'
+                        filters = [
+                            ('maintenance_task_id', '==', task_id),
+                            ('inventory_id', '==', res.get('inventory_id')),
+                            ('status', '==', 'reserved')
+                        ]
+                        q_success, docs, q_err = await self.db.query_documents(COLLECTIONS['inventory_reservations'], filters)
+                        if q_success and docs:
+                            reservation_id = docs[0].get('_doc_id') or docs[0].get('id')
+                    if not reservation_id:
+                        continue
+                    # Mark reservation as received
+                    await self.mark_reservation_received(reservation_id, received_by)
+
+            return True, None
+        except Exception as e:
+            logger.error(f"Error marking task {task_id} inventory received: {str(e)}")
+            return False, str(e)
+
+    async def return_inventory_request(self, request_id: str, returned_by: str, quantity: Optional[int] = None) -> Tuple[bool, Optional[str]]:
+        """Return items for a fulfilled request back to inventory."""
+        try:
+            success, request_data, error = await self.get_inventory_request_by_id(request_id)
+            if not success or not request_data:
+                return False, f"Request not found: {error}"
+
+            inventory_id = request_data.get('inventory_id')
+            qty = int(quantity or request_data.get('quantity_approved') or request_data.get('quantity_requested') or 0)
+            if qty <= 0:
+                return False, "Invalid quantity to return"
+
+            # Restock the inventory
+            restock_success, restock_err = await self.restock_item(inventory_id, qty, returned_by, reason=f"Return from request {request_id}")
+            if not restock_success:
+                return False, f"Failed to restock item: {restock_err}"
+
+            # Update request status to 'returned'
+            update_data = {
+                'status': 'returned',
+                'returned_by': returned_by,
+                'returned_date': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
+            }
+            success_u, err_u = await self.db.update_document(COLLECTIONS['inventory_requests'], request_id, update_data, validate=False)
+            return success_u, err_u
+        except Exception as e:
+            logger.error(f"Error returning inventory for request {request_id}: {str(e)}")
+            return False, str(e)
+
+    async def return_reservation(self, reservation_id: str, returned_by: str, quantity: Optional[int] = None) -> Tuple[bool, Optional[str]]:
+        """Return items for a reservation back to inventory and mark reservation released/returned"""
+        try:
+            success, reservation_data, error = await self.db.get_document(COLLECTIONS['inventory_reservations'], reservation_id)
+            if not success or not reservation_data:
+                return False, f"Reservation not found: {error}"
+
+            inventory_id = reservation_data.get('inventory_id')
+            qty = int(quantity or reservation_data.get('quantity', 0))
+            if qty <= 0:
+                return False, "Invalid quantity to return"
+
+            # Restock the inventory
+            restock_success, restock_err = await self.restock_item(inventory_id, qty, returned_by, reason=f"Return from reservation {reservation_id}")
+            if not restock_success:
+                return False, f"Failed to restock item: {restock_err}"
+
+            # Update reservation to 'released' (or 'returned' if needed), and restore reserved_quantity variance
+            # Decrease reserved_quantity if present
+            try:
+                item_success, item_data, item_err = await self.get_inventory_item(inventory_id)
+                if item_success and item_data:
+                    doc_id = item_data.get('_doc_id', inventory_id)
+                    current_reserved = item_data.get('reserved_quantity', 0) or 0
+                    new_reserved = max(0, current_reserved - qty)
+                    await self.update_inventory_item(doc_id, {'reserved_quantity': new_reserved, 'updated_at': datetime.utcnow()}, returned_by)
+            except Exception:
+                logger.debug('Failed to adjust reserved_quantity on inventory item after return')
+
+            # Update reservation to 'released' and set returned timestamp
+            update_data = {
+                'status': 'released',
+                'released_at': datetime.utcnow(),
+                'released_by': returned_by,
+                'updated_at': datetime.utcnow()
+            }
+            success_u, err_u = await self.db.update_document(COLLECTIONS['inventory_reservations'], reservation_id, update_data)
+            return success_u, err_u
+        except Exception as e:
+            logger.error(f"Error returning reservation {reservation_id}: {str(e)}")
+            return False, str(e)
+
     async def request_replacement_for_defective_item(self, reservation_id: str, replacement_data: Dict[str, Any], requested_by: str) -> Tuple[bool, str, Optional[str]]:
         """Request replacement for a defective reserved item"""
         try:
@@ -1639,6 +1769,205 @@ class InventoryService:
             error_msg = f"Error requesting replacement for reservation {reservation_id}: {str(e)}"
             logger.error(error_msg)
             return False, "", error_msg
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # FORECASTING METHODS
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def get_inventory_forecasting_data(self, building_id: str) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
+        """Get inventory forecasting data for all active items in a building"""
+        try:
+            # Get all active inventory items
+            success, items, error = await self.get_inventory_by_building(building_id, include_inactive=False)
+            if not success:
+                return False, [], error
+
+            forecasting_data = []
+
+            for item in items:
+                item_id = item['id']
+                
+                # Calculate monthly usage
+                monthly_usage = await self._calculate_monthly_usage(item_id)
+                
+                # Calculate trend
+                trend = await self._calculate_usage_trend(item_id)
+                
+                # Calculate days to minimum stock
+                days_to_min = await self._calculate_days_to_minimum(item, monthly_usage)
+                
+                # Calculate reorder date
+                reorder_date = await self._calculate_reorder_date(item, monthly_usage)
+                
+                # Format stock display
+                current_stock = item.get('current_stock', 0)
+                max_stock = item.get('max_stock_level', current_stock)
+                stock_display = f"{current_stock}/{max_stock}"
+                
+                # Determine status
+                status = "Active" if item.get('is_active', True) else "Inactive"
+                
+                forecasting_item = {
+                    'id': item_id,
+                    'name': item.get('item_name', ''),
+                    'category': item.get('category', 'General'),
+                    'status': status,
+                    'stock': stock_display,
+                    'usage': f"{monthly_usage:.1f}",
+                    'trend': trend,
+                    'daysToMin': days_to_min,
+                    'reorderBy': reorder_date
+                }
+                
+                forecasting_data.append(forecasting_item)
+            
+            return True, forecasting_data, None
+            
+        except Exception as e:
+            error_msg = f"Error getting forecasting data: {str(e)}"
+            logger.error(error_msg)
+            return False, [], error_msg
+
+    async def _calculate_monthly_usage(self, item_id: str) -> float:
+        """Calculate average monthly usage for the last 3 months"""
+        try:
+            # Get transactions for the last 90 days
+            ninety_days_ago = datetime.now() - timedelta(days=90)
+            
+            filters = [
+                ('inventory_id', '==', item_id),
+                ('transaction_type', '==', 'out'),
+                ('created_at', '>=', ninety_days_ago)
+            ]
+            
+            success, transactions, error = await self.db.query_documents(COLLECTIONS['inventory_transactions'], filters)
+            
+            if not success or not transactions:
+                return 0.0
+            
+            # Calculate total consumed in 90 days
+            total_consumed = sum(abs(t.get('quantity', 0)) for t in transactions)
+            
+            # Convert to monthly average
+            monthly_usage = (total_consumed / 90) * 30
+            
+            return monthly_usage
+            
+        except Exception as e:
+            logger.error(f"Error calculating monthly usage for {item_id}: {str(e)}")
+            return 0.0
+
+    async def _calculate_usage_trend(self, item_id: str) -> Dict[str, Any]:
+        """Calculate usage trend (increasing, decreasing, stable)"""
+        try:
+            # Get current month usage
+            current_month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            current_month_end = (current_month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+            
+            # Get previous month usage
+            prev_month_end = current_month_start - timedelta(days=1)
+            prev_month_start = prev_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            # Current month transactions
+            current_filters = [
+                ('inventory_id', '==', item_id),
+                ('transaction_type', '==', 'out'),
+                ('created_at', '>=', current_month_start),
+                ('created_at', '<=', current_month_end)
+            ]
+            
+            success_current, current_transactions, _ = await self.db.query_documents(COLLECTIONS['inventory_transactions'], current_filters)
+            current_usage = sum(abs(t.get('quantity', 0)) for t in current_transactions) if success_current else 0
+            
+            # Previous month transactions
+            prev_filters = [
+                ('inventory_id', '==', item_id),
+                ('transaction_type', '==', 'out'),
+                ('created_at', '>=', prev_month_start),
+                ('created_at', '<=', prev_month_end)
+            ]
+            
+            success_prev, prev_transactions, _ = await self.db.query_documents(COLLECTIONS['inventory_transactions'], prev_filters)
+            prev_usage = sum(abs(t.get('quantity', 0)) for t in prev_transactions) if success_prev else 0
+            
+            # Determine trend
+            if prev_usage == 0:
+                if current_usage > 0:
+                    icon = "trending_up"
+                    color = "green"
+                else:
+                    icon = "trending_flat"
+                    color = "grey"
+            else:
+                change_percent = ((current_usage - prev_usage) / prev_usage) * 100
+                if change_percent > 10:
+                    icon = "trending_up"
+                    color = "green"
+                elif change_percent < -10:
+                    icon = "trending_down"
+                    color = "red"
+                else:
+                    icon = "trending_flat"
+                    color = "grey"
+            
+            return {'icon': icon, 'color': color}
+            
+        except Exception as e:
+            logger.error(f"Error calculating trend for {item_id}: {str(e)}")
+            return {'icon': Icons.trending_flat, 'color': Colors.grey}
+
+    async def _calculate_days_to_minimum(self, item: Dict[str, Any], monthly_usage: float) -> str:
+        """Calculate days until stock reaches reorder level"""
+        try:
+            current_stock = item.get('current_stock', 0)
+            reorder_level = item.get('reorder_level', 0)
+            
+            if monthly_usage <= 0 or current_stock <= reorder_level:
+                return "N/A"
+            
+            # Calculate daily usage
+            daily_usage = monthly_usage / 30
+            
+            # Days to reach reorder level
+            stock_above_reorder = current_stock - reorder_level
+            days_to_min = stock_above_reorder / daily_usage
+            
+            if days_to_min < 0:
+                return "0d"
+            elif days_to_min < 30:
+                return f"{int(days_to_min)}d"
+            else:
+                return f"{int(days_to_min)}d"
+                
+        except Exception as e:
+            logger.error(f"Error calculating days to min for {item.get('id')}: {str(e)}")
+            return "N/A"
+
+    async def _calculate_reorder_date(self, item: Dict[str, Any], monthly_usage: float) -> str:
+        """Calculate estimated reorder date"""
+        try:
+            current_stock = item.get('current_stock', 0)
+            reorder_level = item.get('reorder_level', 0)
+            
+            if monthly_usage <= 0 or current_stock <= reorder_level:
+                return "Immediate"
+            
+            # Calculate daily usage
+            daily_usage = monthly_usage / 30
+            
+            # Days to reach reorder level
+            stock_above_reorder = current_stock - reorder_level
+            days_to_reorder = stock_above_reorder / daily_usage
+            
+            if days_to_reorder < 0:
+                return "Immediate"
+            
+            reorder_date = datetime.now() + timedelta(days=days_to_reorder)
+            return reorder_date.strftime("%b %d")
+                
+        except Exception as e:
+            logger.error(f"Error calculating reorder date for {item.get('id')}: {str(e)}")
+            return "Unknown"
 
 # Create global service instance
 inventory_service = InventoryService()

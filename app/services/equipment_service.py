@@ -4,6 +4,7 @@ from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
 from ..models.database_models import Equipment
 from .equipment_id_service import equipment_id_service
+from .user_id_service import UserIdService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 class EquipmentService:
     def __init__(self):
         self.db = database_service
+        self.user_service = UserIdService()
 
     async def create_equipment(self, equipment_data: Dict[str, Any], created_by: str) -> Tuple[bool, Optional[str], Optional[str]]:
         """Create a new equipment record"""
@@ -21,6 +23,9 @@ class EquipmentService:
                 equipment_data['formatted_id'] = formatted
             except Exception as e:
                 logger.warning(f"Failed to generate formatted equipment ID: {e}")
+            else:
+                # Also expose as equipment_id for frontend compatibility
+                equipment_data['equipment_id'] = formatted
 
             # Normalize payload to expected backend fields (accept frontend keys)
             equipment_data = self._normalize_payload(equipment_data)
@@ -29,23 +34,31 @@ class EquipmentService:
                 'created_at': datetime.now(),
                 'updated_at': datetime.now(),
                 'created_by': created_by,
+                # Try to store a snapshot of the creator's display name
+                'created_by_name': None,
                 'is_active': True
             })
 
+            # Attempt to fetch creator name and store a snapshot on the document before saving
+            try:
+                creator_profile = await self.user_service.get_user_profile(created_by)
+                if creator_profile:
+                    equipment_data['created_by_name'] = f"{creator_profile.first_name} {creator_profile.last_name}"
+            except Exception:
+                # If we fail to resolve the name, leave the snapshot as None
+                pass
+
+            # Use the formatted ID as the document ID to make lookup deterministic
             success, doc_id, error = await self.db.create_document(
                 COLLECTIONS['equipment'],
                 equipment_data,
+                document_id=equipment_data.get('formatted_id'),
                 validate=True
             )
 
             if success:
-                # Fetch the document back to return normalized structure
-                got_success, got_doc, got_err = await self.db.get_document(COLLECTIONS['equipment'], doc_id)
-                if got_success:
-                    return True, doc_id, None
-                else:
-                    # Document created but couldn't fetch (no data returned)
-                    return True, doc_id, None
+                # Return the formatted id as the created document id (for frontend convenience)
+                return True, doc_id or equipment_data.get('formatted_id'), None
             else:
                 return False, None, error
 
@@ -63,13 +76,17 @@ class EquipmentService:
             )
 
             if success and items:
-                # Normalize response (map some keys for frontend convenience)
-                return True, self._normalize_response(items[0]), None
+                # Normalize response and enrich with user data
+                normalized = self._normalize_response(items[0])
+                await self._enrich_with_user_data(normalized)
+                return True, normalized, None
 
             # fallback to document ID
             success, doc, err = await self.db.get_document(COLLECTIONS['equipment'], equipment_id)
             if success and doc:
-                return True, self._normalize_response(doc), None
+                normalized = self._normalize_response(doc)
+                await self._enrich_with_user_data(normalized)
+                return True, normalized, None
             return success, doc, err
 
         except Exception as e:
@@ -86,6 +103,17 @@ class EquipmentService:
             update_data = self._normalize_payload(update_data)
             update_data['updated_at'] = datetime.now()
             update_data['updated_by'] = updated_by
+            # Try to store a snapshot of the updater's display name
+            update_data['updated_by_name'] = None
+
+            # Attempt to fetch updater name and store a snapshot on the document
+            try:
+                updater_profile = await self.user_service.get_user_profile(updated_by)
+                if updater_profile:
+                    update_data['updated_by_name'] = f"{updater_profile.first_name} {updater_profile.last_name}"
+            except Exception:
+                # If we fail to resolve the name, leave the snapshot as None
+                pass
 
             doc_id = current.get('_doc_id') or current.get('id') or equipment_id
             success, error = await self.db.update_document(
@@ -114,8 +142,19 @@ class EquipmentService:
             update_data = {
                 'is_active': False,
                 'updated_at': datetime.now(),
-                'updated_by': deleted_by
+                'updated_by': deleted_by,
+                # Try to store a snapshot of the deleter's display name
+                'updated_by_name': None
             }
+
+            # Attempt to fetch deleter name and store a snapshot on the document
+            try:
+                deleter_profile = await self.user_service.get_user_profile(deleted_by)
+                if deleter_profile:
+                    update_data['updated_by_name'] = f"{deleter_profile.first_name} {deleter_profile.last_name}"
+            except Exception:
+                # If we fail to resolve the name, leave the snapshot as None
+                pass
 
             success, error = await self.db.update_document(
                 COLLECTIONS['equipment'],
@@ -140,7 +179,11 @@ class EquipmentService:
 
             success, docs, err = await self.db.query_documents(COLLECTIONS['equipment'], filters)
             if success:
-                return True, [self._normalize_response(d) for d in docs], None
+                normalized_docs = [self._normalize_response(d) for d in docs]
+                # Enrich all documents with user data
+                for doc in normalized_docs:
+                    await self._enrich_with_user_data(doc)
+                return True, normalized_docs, None
             return success, docs, err
 
         except Exception as e:
@@ -163,7 +206,7 @@ class EquipmentService:
                    ql in (item.get('manufacturer') or '').lower()
             ]
 
-            return True, [self._normalize_response(d) for d in filtered], None
+            return True, filtered, None
 
         except Exception as e:
             logger.error(f"Error searching equipment: {e}")
@@ -259,8 +302,53 @@ class EquipmentService:
             out['createdAt'] = doc.get('created_at')
         if 'updated_at' in doc:
             out['updatedAt'] = doc.get('updated_at')
+        if 'updated_by' in doc:
+            out['updatedBy'] = doc.get('updated_by')
 
         return out
+
+    async def _enrich_with_user_data(self, doc: Dict[str, Any]) -> None:
+        """Enrich document with user data (replace UIDs with names for display)"""
+        try:
+            # Replace created_by UID with full name
+            created_by_uid = doc.get('created_by')
+            if created_by_uid:
+                try:
+                    user_profile = await self.user_service.get_user_profile(created_by_uid)
+                    if user_profile:
+                        doc['created_by'] = f"{user_profile.first_name} {user_profile.last_name}"
+                    else:
+                        # Fall back to any stored snapshot value on the document
+                        if doc.get('created_by_name'):
+                            doc['created_by'] = doc.get('created_by_name')
+                        else:
+                            doc['created_by'] = "Unknown User"
+                except Exception:
+                    if doc.get('created_by_name'):
+                        doc['created_by'] = doc.get('created_by_name')
+                    else:
+                        doc['created_by'] = "Unknown User"
+
+            # Replace updated_by UID with full name if present
+            updated_by_uid = doc.get('updated_by')
+            if updated_by_uid:
+                try:
+                    user_profile = await self.user_service.get_user_profile(updated_by_uid)
+                    if user_profile:
+                        doc['updated_by'] = f"{user_profile.first_name} {user_profile.last_name}"
+                    else:
+                        if doc.get('updated_by_name'):
+                            doc['updated_by'] = doc.get('updated_by_name')
+                        else:
+                            doc['updated_by'] = "Unknown User"
+                except Exception:
+                    if doc.get('updated_by_name'):
+                        doc['updated_by'] = doc.get('updated_by_name')
+                    else:
+                        doc['updated_by'] = "Unknown User"
+        except Exception as e:
+            logger.warning(f"Failed to enrich user data: {e}")
+            # Don't fail the whole operation if user enrichment fails
 
 
 # Singleton instance
