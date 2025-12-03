@@ -584,7 +584,7 @@ async def submit_completion_assessment(
             try:
                 admin_users = await notification_manager._get_users_by_role("admin")
                 print(f"[Job Service Completion] Found {len(admin_users) if admin_users else 0} admin users")
-                admin_id = admin_users[0]["id"] if admin_users else None
+                admin_id = admin_users[0]["_doc_id"] if admin_users else None
             except Exception as e:
                 print(f"[Job Service Completion] Error getting admin users: {str(e)}")
                 import traceback
