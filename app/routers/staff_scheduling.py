@@ -337,6 +337,31 @@ async def approve_day_off_request(
                 detail=f"Failed to approve request: {error}"
             )
         
+        # Try to fetch the updated request to apply changes to staff availability
+        try:
+            # Query by _doc_id which is the internal document identifier
+            success_q, docs, q_error = await database_service.query_documents(
+                COLLECTIONS['day_off_requests'], filters=[('_doc_id', '==', request_id)], limit=1
+            )
+            if success_q and docs:
+                    doc = docs[0]
+                    staff_id = doc.get('staff_id')
+                    request_date = doc.get('request_date')
+                    if staff_id:
+                        try:
+                            await notification_manager.notify_day_off_approved(
+                                request_id=request_id,
+                                staff_id=staff_id,
+                                approved_by=admin_id
+                            )
+                        except:
+                            pass
+                    if staff_id and request_date:
+                        await staff_scheduling_service.apply_day_off_to_availability(staff_id, request_date)
+        except Exception:
+            # Continue, do not let availability update failures break approval
+            pass
+
         return {
             "message": "Day-off request approved successfully",
             "request_id": request_id,
@@ -360,7 +385,20 @@ async def reject_day_off_request(
     """Reject a day-off request (Admin only)"""
     try:
         admin_id = current_user.get('uid')
-        
+
+        # Fetch the existing request to determine if we have to revert availability
+        try:
+            success_q, docs_q, q_err = await database_service.query_documents(
+                COLLECTIONS['day_off_requests'], filters=[('_doc_id', '==', request_id)], limit=1
+            )
+            prev_status = docs_q[0].get('status') if success_q and docs_q else None
+            prev_staff_id = docs_q[0].get('staff_id') if success_q and docs_q else None
+            prev_request_date = docs_q[0].get('request_date') if success_q and docs_q else None
+        except Exception:
+            prev_status = None
+            prev_staff_id = None
+            prev_request_date = None
+
         update_data = {
             'status': DayOffStatus.REJECTED.value,
             'approved_by': admin_id,
@@ -462,6 +500,14 @@ async def bulk_approve_day_off_requests(
                         )
                     except:
                         pass  # Notification failure shouldn't block approval
+
+                # Apply the approved day-off to staff availability (best-effort)
+                try:
+                    request_date = doc.get('request_date')
+                    if staff_id and request_date:
+                        await staff_scheduling_service.apply_day_off_to_availability(staff_id, request_date)
+                except Exception:
+                    pass
                 
                 approved_count += 1
                 
@@ -556,6 +602,21 @@ async def bulk_reject_day_off_requests(
                         pass  # Notification failure shouldn't block rejection
                 
                 rejected_count += 1
+                # If previously approved, revert availability to available
+                try:
+                    if doc.get('status', '').lower() == DayOffStatus.APPROVED.value.lower():
+                        request_date = doc.get('request_date')
+                        if staff_id and request_date:
+                            await staff_scheduling_service.apply_day_off_to_availability(staff_id, request_date, set_available=True)
+                except Exception:
+                    pass
+
+                # If the previous status was Approved, revert the day entry in staff availability to available
+                try:
+                    if prev_status and prev_status.lower() == DayOffStatus.APPROVED.value.lower() and prev_staff_id and prev_request_date:
+                        await staff_scheduling_service.apply_day_off_to_availability(prev_staff_id, prev_request_date, set_available=True)
+                except Exception:
+                    pass
                 
             except Exception as e:
                 failed_count += 1
@@ -637,11 +698,12 @@ async def smart_assign_staff(
 @router.get("/overview")
 async def get_staff_schedule_overview(
     building_id: Optional[str] = Query(None, description="Filter by building ID"),
+    week_start: Optional[str] = Query(None, description="Week start date (YYYY-MM-DD) to scope availability"),
     current_user: dict = Depends(require_admin)
 ):
     """Get staff scheduling overview for admin dashboard"""
     try:
-        overview = await staff_scheduling_service.get_staff_schedule_overview(building_id)
+        overview = await staff_scheduling_service.get_staff_schedule_overview(building_id, week_start=week_start)
         
         if "error" in overview:
             raise HTTPException(
@@ -663,6 +725,7 @@ async def get_staff_schedule_overview(
 async def get_staff_list_with_status(
     department: Optional[str] = Query(None, description="Filter by department"),
     status_filter: Optional[str] = Query(None, description="Filter by status"),
+    week_start: Optional[str] = Query(None, description="Week start date (YYYY-MM-DD) to filter availability"),
     current_user: dict = Depends(require_admin)
 ):
     """Get detailed staff list with availability and status"""
@@ -682,10 +745,21 @@ async def get_staff_list_with_status(
                 detail=f"Failed to get staff: {error}"
             )
         
-        # Get current week availability
-        today = date.today()
-        week_start = today - timedelta(days=today.weekday())
-        week_start_str = week_start.strftime('%Y-%m-%d')
+        # Determine the requested week (defaults to current week when not provided)
+        if week_start:
+            try:
+                parsed_week_start = datetime.strptime(week_start, '%Y-%m-%d').date()
+                week_start_date = parsed_week_start
+            except Exception:
+                # fall back to today's week start if parsing fails
+                today = date.today()
+                week_start_date = today - timedelta(days=today.weekday())
+                week_start_date = today - timedelta(days=today.weekday())
+        else:
+            today = date.today()
+            week_start_date = today - timedelta(days=today.weekday())
+
+        week_start_str = week_start_date.strftime('%Y-%m-%d')
         
         success, availability_docs, error = await database_service.query_documents(
             COLLECTIONS['staff_availability'],
@@ -699,28 +773,44 @@ async def get_staff_list_with_status(
         
         # Combine data
         staff_list = []
+
+        # Anchor date & day for the selected week - compute once
+        anchor_weekday = date.today().weekday()
+        anchor_date = week_start_date + timedelta(days=anchor_weekday)
+        anchor_day_name = anchor_date.strftime('%A').lower()
+        anchor_date_str = anchor_date.strftime('%Y-%m-%d')
+        # Preload day-off requests for the anchor date
+        success, dayoff_docs_anchor, error = await database_service.query_documents(
+            COLLECTIONS['day_off_requests'], filters=[('request_date', '==', anchor_date_str)])
+
         for staff in all_staff:
-            staff_id = staff.get('id') or staff.get('_doc_id')
+            # Try multiple fields to find the unique staff identifier used across collections
+            staff_id = (
+                staff.get('id') or
+                staff.get('_doc_id') or
+                staff.get('uid') or
+                staff.get('user_id') or
+                staff.get('staff_id')
+            )
             
             # Find availability
             availability = next(
-                (a for a in availability_docs if a.get('staff_id') == staff_id),
+                (a for a in availability_docs if a.get('staff_id') == staff_id or a.get('staff_id') == staff.get('user_id') or a.get('staff_id') == staff.get('uid')),
                 None
             )
             
             # Find real-time status
             real_time_status = next(
-                (s for s in status_docs if s.get('staff_id') == staff_id),
+                (s for s in status_docs if s.get('staff_id') == staff_id or s.get('staff_id') == staff.get('user_id') or s.get('staff_id') == staff.get('uid')),
                 {}
             )
             
-            # Calculate this week's availability
-            today_name = today.strftime('%A').lower()
+            # Use the precomputed anchor_day_name and day-off docs
             is_available_today = True
             days_available_this_week = 5  # Default
             
             if availability:
-                is_available_today = availability.get(today_name, True)
+                is_available_today = availability.get(anchor_day_name, True)
                 days_available_this_week = sum([
                     availability.get('monday', True),
                     availability.get('tuesday', True),
@@ -731,8 +821,15 @@ async def get_staff_list_with_status(
                     availability.get('sunday', False)
                 ])
             
+            # If a day-off request exists for this staff on the anchor date with pending/approved status, treat as unavailable
+            if dayoff_docs_anchor:
+                for doc in dayoff_docs_anchor:
+                    if doc.get('staff_id') == staff_id and doc.get('status') and doc.get('status').lower() in ('approved', 'pending'):
+                        is_available_today = False
+                        break
+
             staff_info = {
-                "staff_id": staff_id,
+                "staff_id": staff.get('uid') or staff_id,
                 "user_id": staff.get('user_id'),
                 "first_name": staff.get('first_name'),
                 "last_name": staff.get('last_name'),
@@ -754,7 +851,7 @@ async def get_staff_list_with_status(
                 "auto_assign_eligible": real_time_status.get('auto_assign_eligible', True),
                 
                 # Computed fields
-                "overall_status": "Available" if is_available_today and real_time_status.get('current_status') == 'available' else "Unavailable"
+                "overall_status": "Available" if is_available_today and (str(real_time_status.get('current_status', 'available')).lower() == 'available') else "Unavailable"
             }
             
             # Apply status filter

@@ -40,6 +40,7 @@ class UserSearchFilters(BaseModel):
 async def get_staff_members(
     department: Optional[str] = Query(None, description="Filter by department"),
     available_only: bool = Query(False, description="Only return available staff"),
+    schedule: Optional[str] = Query(None, description="Optional date to filter availability (YYYY-MM-DD)"),
     current_user: dict = Depends(require_staff_or_admin)
 ):
     """Get all staff members with optional filtering"""
@@ -75,6 +76,44 @@ async def get_staff_members(
                 single_dept = staff.get("staff_department") or staff.get("department")
                 staff_depts = [single_dept] if single_dept else []
             
+            # When schedule parameter is provided, further check daily availability and day-off requests
+            if schedule:
+                try:
+                    # Parse requested date
+                    from datetime import datetime, timedelta
+                    requested_date = datetime.strptime(schedule, '%Y-%m-%d').date()
+                    week_start = requested_date - timedelta(days=requested_date.weekday())
+                    week_start_str = week_start.strftime('%Y-%m-%d')
+
+                    # Determine staff unique id to query availability and day off (user's firebase uid or staff_id)
+                    staff_uid = staff.get('id') or staff.get('_doc_id') or staff.get('user_id') or staff.get('staff_id')
+
+                    # Query weekly availability for the week
+                    avail_filters = [('staff_id', '==', staff_uid), ('week_start_date', '==', week_start_str)]
+                    a_success, a_docs, a_error = await database_service.query_documents(COLLECTIONS['staff_availability'], filters=avail_filters, limit=1)
+                    if a_success and a_docs:
+                        avail_doc = a_docs[0]
+                        day_name = requested_date.strftime('%A').lower()
+                        if not avail_doc.get(day_name, True):
+                            # Staff is unavailable for the requested date
+                            continue
+
+                    # Query day off requests for that date/status
+                    dor_filters = [('staff_id', '==', staff_uid), ('request_date', '==', schedule)]
+                    dor_success, dor_docs, dor_error = await database_service.query_documents(COLLECTIONS['day_off_requests'], filters=dor_filters)
+                    if dor_success and dor_docs and len(dor_docs) > 0:
+                        # If any day off requests exist for that date and not in 'rejected' status, exclude staff
+                        blocked = False
+                        for d in dor_docs:
+                            if d.get('status') in ['pending', 'approved']:
+                                blocked = True
+                                break
+                        if blocked:
+                            continue
+                except Exception:
+                    # If any error during checks, fallback to include staff
+                    pass
+
             formatted_staff.append({
                 "id": staff.get("id") or staff.get("_doc_id"),  # Firebase UID
                 "uid": staff.get("id") or staff.get("_doc_id"),  # Firebase UID (explicit field for clarity)
