@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
 from app.services.user_id_service import user_id_service
+from app.services.inventory_request_id_service import inventory_request_id_service
 from ..models.database_models import (
     Inventory, InventoryTransaction, InventoryRequest, InventoryReservation,
     LowStockAlert, InventoryUsageAnalytics
@@ -315,8 +316,15 @@ class InventoryService:
             # Format date as YYYY-MM-DD for display consistency
             date_only = now.strftime('%Y-%m-%d')
             
+            # Generate formatted inventory request ID to use as document ID
+            formatted_id = await inventory_request_id_service.generate_inventory_request_id()
+            logger.info(f"=" * 80)
+            logger.info(f"CREATING INVENTORY REQUEST WITH FORMATTED ID: {formatted_id}")
+            logger.info(f"=" * 80)
+            
             # Add metadata
             request_data.update({
+                'formatted_id': formatted_id,  # Store for easy reference
                 'created_at': now,
                 'updated_at': now,
                 'requested_date': now,
@@ -327,13 +335,20 @@ class InventoryService:
                 'reference_id': request_data.get('reference_id') or request_data.get('maintenance_task_id')
             })
             
+            # Create document with formatted ID as the document ID
+            logger.info(f"About to create document with ID: {formatted_id}")
             success, request_id, error = await self.db.create_document(
                 COLLECTIONS['inventory_requests'],
                 request_data,
+                document_id=formatted_id,  # Use formatted ID as document ID
                 validate=False  # Skip validation for now
             )
 
             if success:
+                logger.info(f"✓✓✓ CREATED INVENTORY REQUEST: {request_id} ✓✓✓")
+                logger.info(f"Expected: {formatted_id}, Got: {request_id}")
+                logger.info(f"Match: {request_id == formatted_id}")
+                
                 # Send FCM notification to admins
                 try:
                     from ..services.fcm_service import fcm_service
@@ -346,19 +361,57 @@ class InventoryService:
 
                 # Notify admins/inventory staff via notification manager as well
                 try:
-                    from ..services.notification_manager import notification_manager
-                    item_name = request_data.get('item_name') or ''
-                    qty = request_data.get('quantity_requested', 1)
-                    await notification_manager.notify_inventory_request_submitted(
-                        request_id,
-                        request_data.get('requested_by'),
-                        item_name,
-                        qty,
-                        request_data.get('purpose', '')
-                    )
-                except Exception:
-                    # Non-fatal
-                    logger.debug("Failed to send inventory request submitted notifications via manager")
+                    from ..services.notification_manager import notification_manager, NotificationType, NotificationChannel, NotificationPriority
+                    
+                    # Get requester details
+                    requested_by = request_data.get('requested_by')
+                    requester_name = "Unknown User"
+                    if requested_by:
+                        try:
+                            requester_profile = await user_id_service.get_user_profile(requested_by)
+                            requester_name = f"{requester_profile.first_name} {requester_profile.last_name}" if requester_profile else "Unknown User"
+                        except:
+                            pass
+                    
+                    # Get item details
+                    item_id = request_data.get('inventory_id')
+                    quantity = request_data.get('quantity') or request_data.get('quantity_requested', 1)
+                    purpose = request_data.get('purpose', 'Inventory request')
+                    
+                    item_name = 'Item'
+                    item_code = item_id or 'N/A'
+                    if item_id:
+                        try:
+                            item_success, item_data, _ = await self.get_inventory_item(item_id)
+                            if item_success and item_data:
+                                item_name = item_data.get('item_name', 'Item')
+                                item_code = item_data.get('item_code', item_id)
+                        except:
+                            pass
+                    
+                    # Notify all admins
+                    admin_users = await notification_manager._get_users_by_role('admin')
+                    for admin in admin_users:
+                        admin_id = admin.get('id') or admin.get('_doc_id')
+                        if admin_id:
+                            await notification_manager.create_notification(
+                                notification_type=NotificationType.INVENTORY_REQUEST_SUBMITTED,
+                                recipient_id=admin_id,
+                                title=f"New Inventory Request: {formatted_id}",
+                                message=f"{requester_name} requested {quantity} unit(s) of {item_name} ({item_code}). Purpose: {purpose}",
+                                sender_id=requested_by,
+                                related_entity_type='inventory_request',
+                                related_entity_id=request_id,
+                                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                                priority=NotificationPriority.NORMAL,
+                                requires_action=True,
+                                action_url=f"/admin/inventory/requests/{request_id}",
+                                action_label="Review Request",
+                                metadata={'formatted_id': formatted_id}
+                            )
+                except Exception as notif_err:
+                    logger.error(f"Failed to send inventory request notifications: {notif_err}")
+                    # Non-fatal - continue
             
             return success, request_id, error
             
@@ -1071,10 +1124,12 @@ class InventoryService:
                 if current_stock < quantity:
                     return False, f"Insufficient stock: {current_stock} available, {quantity} needed"
                 
-                # Deduct stock
+                # Deduct stock using document ID
+                # Get document ID for the inventory item so we update the correct Firestore document
+                doc_id = item_data.get('_doc_id') or inventory_id
                 new_stock = current_stock - quantity
                 stock_update = {"current_stock": new_stock, "updated_at": datetime.now()}
-                await self.db.update_document(COLLECTIONS['inventory'], inventory_id, stock_update)
+                await self.db.update_document(COLLECTIONS['inventory'], doc_id, stock_update)
                 
                 # Log transaction
                 await self._log_transaction(
@@ -1102,7 +1157,12 @@ class InventoryService:
             update_data["updated_at"] = datetime.now()
             update_data["updated_by"] = updated_by
             
-            success, error = await self.db.update_document(COLLECTIONS['inventory'], item_id, update_data)
+            # Resolve doc id for item to update
+            doc_success, current_item, doc_error = await self.get_inventory_item(item_id)
+            if not doc_success:
+                return False, doc_error or "Item not found"
+            doc_id = current_item.get('_doc_id') or item_id
+            success, error = await self.db.update_document(COLLECTIONS['inventory'], doc_id, update_data)
             return success, error
             
         except Exception as e:
@@ -1116,32 +1176,37 @@ class InventoryService:
     async def create_inventory_request(self, request_data: Dict[str, Any]) -> Tuple[bool, str, Optional[str]]:
         """Create a new inventory request"""
         try:
-            # Add metadata
-            request_data.update({
-                'status': 'pending',
-                'created_at': datetime.now(),
-                'updated_at': datetime.now()
-            })
+            # Generate formatted ID for the request
+            formatted_id = await inventory_request_id_service.generate_inventory_request_id()
+            logger.info(f"Generated formatted ID for inventory request: {formatted_id}")
             
-            # Validate and create
-            success, request_id, error = await self.db.create_document(
-                COLLECTIONS['inventory_requests'], 
-                request_data,
-                validate=True
+            # Add formatted_id to request_data
+            request_data['formatted_id'] = formatted_id
+            
+            # Ensure required fields
+            if 'status' not in request_data:
+                request_data['status'] = 'pending'
+            
+            # Create the request document
+            success, doc_id, error = await self.db.create_document(
+                COLLECTIONS['inventory_requests'],
+                request_data
             )
             
-            if success:
-                logger.info(f"Inventory request created: {request_id}")
+            if not success:
+                logger.error(f"Failed to create inventory request: {error}")
+                return False, None, error
             
-            return success, request_id, error
+            logger.info(f"Created inventory request {formatted_id} (doc_id: {doc_id})")
+            return True, doc_id, None
             
         except Exception as e:
             logger.error(f"Error creating inventory request: {str(e)}")
-            return False, "", str(e)
+            return False, None, str(e)
 
     async def get_inventory_requests(self, building_id: Optional[str] = None, status: Optional[str] = None, 
                                    requested_by: Optional[str] = None, maintenance_task_id: Optional[str] = None) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
-        """Get inventory requests with optional filters"""
+        """Get inventory requests with optional filters and enriched data"""
         try:
             filters = []
             
@@ -1158,6 +1223,26 @@ class InventoryService:
                 filters.append(('maintenance_task_id', '==', maintenance_task_id))
             
             success, requests, error = await self.db.query_documents(COLLECTIONS['inventory_requests'], filters)
+            
+            if success and requests:
+                # Enrich each request with staff name and ensure formatted_id
+                for request in requests:
+                    # Add staff name
+                    requested_by_uid = request.get('requested_by')
+                    if requested_by_uid:
+                        try:
+                            requester_profile = await user_id_service.get_user_profile(requested_by_uid)
+                            if requester_profile:
+                                request['requested_by_name'] = f"{requester_profile.first_name} {requester_profile.last_name}"
+                        except Exception as e:
+                            logger.warning(f"Could not fetch requester name for {requested_by_uid}: {e}")
+                            request['requested_by_name'] = "Unknown"
+                    
+                    # Ensure formatted_id is present
+                    if not request.get('formatted_id'):
+                        # For old requests, use _doc_id as fallback
+                        request['formatted_id'] = request.get('_doc_id', '')
+            
             return success, requests, error
             
         except Exception as e:
@@ -1165,9 +1250,32 @@ class InventoryService:
             return False, [], str(e)
 
     async def get_inventory_request_by_id(self, request_id: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
-        """Get inventory request by ID"""
+        """Get inventory request by ID with enriched data"""
         try:
             success, request_data, error = await self.db.get_document(COLLECTIONS['inventory_requests'], request_id)
+            
+            logger.info(f"Raw request data from DB - formatted_id: {request_data.get('formatted_id') if request_data else 'None'}")
+            
+            if success and request_data:
+                # Enrich with staff name
+                requested_by = request_data.get('requested_by')
+                if requested_by:
+                    try:
+                        requester_profile = await user_id_service.get_user_profile(requested_by)
+                        if requester_profile:
+                            request_data['requested_by_name'] = f"{requester_profile.first_name} {requester_profile.last_name}"
+                    except Exception as e:
+                        logger.warning(f"Could not fetch requester name: {e}")
+                        request_data['requested_by_name'] = "Unknown"
+                
+                # formatted_id should always exist (it's the document ID for new requests)
+                # For old requests, keep the field as-is or use document ID as fallback
+                if not request_data.get('formatted_id'):
+                    logger.warning(f"Request {request_id} missing formatted_id field, using request_id")
+                    request_data['formatted_id'] = request_id
+                
+                logger.info(f"Final request data - formatted_id: {request_data.get('formatted_id')}")
+            
             return success, request_data, error
             
         except Exception as e:
@@ -1236,40 +1344,16 @@ class InventoryService:
     async def consume_stock(self, item_id: str, quantity: int, performed_by: str, reference_type: Optional[str] = None, reference_id: Optional[str] = None, reason: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """Consume stock from inventory"""
         try:
-            # Get current item
-            success, item_data, error = await self.get_inventory_item(item_id)
-            if not success:
-                return False, error or "Item not found"
-            
-            current_stock = item_data.get('current_stock', 0)
-            if current_stock < quantity:
-                return False, f"Insufficient stock: {current_stock} available, {quantity} needed"
-            
-            # Update stock
-            new_stock = current_stock - quantity
-            update_data = {
-                'current_stock': new_stock,
-                'updated_at': datetime.now()
-            }
-            
-            success, error = await self.db.update_document(COLLECTIONS['inventory'], item_id, update_data)
-            if not success:
-                return False, error
-            
-            # Log transaction
-            await self._log_transaction(
-                inventory_id=item_id,
+            # Delegate to update_stock to ensure consistent behavior and logging
+            return await self.update_stock(
+                item_id=item_id,
+                quantity_change=-quantity,
                 transaction_type="out",
-                quantity=quantity,
-                previous_stock=current_stock,
-                new_stock=new_stock,
                 performed_by=performed_by,
                 reference_type=reference_type,
                 reference_id=reference_id,
                 reason=reason
             )
-            
-            return True, None
             
         except Exception as e:
             logger.error(f"Error consuming stock for item {item_id}: {str(e)}")
@@ -1278,37 +1362,25 @@ class InventoryService:
     async def restock_item(self, item_id: str, quantity: int, performed_by: str, cost_per_unit: Optional[float] = None, reason: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """Add stock to inventory"""
         try:
-            # Get current item
-            success, item_data, error = await self.get_inventory_item(item_id)
-            if not success:
-                return False, error or "Item not found"
-            
-            current_stock = item_data.get('current_stock', 0)
-            new_stock = current_stock + quantity
-            
-            # Update stock
-            update_data = {
-                'current_stock': new_stock,
-                'updated_at': datetime.now()
-            }
-            
-            success, error = await self.db.update_document(COLLECTIONS['inventory'], item_id, update_data)
-            if not success:
-                return False, error
-            
-            # Log transaction
-            await self._log_transaction(
-                inventory_id=item_id,
+            # Delegate to update_stock to ensure consistent behavior and logging
+            # Also include debugging metadata to help identify document ID issues
+            try:
+                # Attempt to resolve doc id for better visibility
+                _, doc_item, _ = await self.get_inventory_item(item_id)
+                doc_id = doc_item.get('_doc_id') if doc_item else None
+            except Exception:
+                doc_id = None
+            logger.debug(f"Restocking item: item_id={item_id}, doc_id={doc_id}, quantity={quantity}")
+            result = await self.update_stock(
+                item_id=item_id,
+                quantity_change=quantity,
                 transaction_type="in",
-                quantity=quantity,
-                previous_stock=current_stock,
-                new_stock=new_stock,
                 performed_by=performed_by,
-                reason=reason,
+                reason=reason or "Stock replenishment",
                 cost_per_unit=cost_per_unit
             )
-            
-            return True, None
+            logger.debug(f"Restock result for item_id={item_id}, doc_id={doc_id}: {result}")
+            return result
             
         except Exception as e:
             logger.error(f"Error restocking item {item_id}: {str(e)}")
@@ -1317,37 +1389,20 @@ class InventoryService:
     async def adjust_stock(self, item_id: str, new_quantity: int, performed_by: str, reason: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """Adjust stock to specific quantity"""
         try:
-            # Get current item
+            # Use update_stock to perform adjustment so validation and logging remain consistent
+            # Compute quantity change relative to current stock
             success, item_data, error = await self.get_inventory_item(item_id)
             if not success:
                 return False, error or "Item not found"
-            
             current_stock = item_data.get('current_stock', 0)
             quantity_change = new_quantity - current_stock
-            
-            # Update stock
-            update_data = {
-                'current_stock': new_quantity,
-                'updated_at': datetime.now()
-            }
-            
-            success, error = await self.db.update_document(COLLECTIONS['inventory'], item_id, update_data)
-            if not success:
-                return False, error
-            
-            # Log transaction (adjustment)
-            transaction_type = "in" if quantity_change > 0 else "out"
-            await self._log_transaction(
-                inventory_id=item_id,
+            return await self.update_stock(
+                item_id=item_id,
+                quantity_change=quantity_change,
                 transaction_type="adjustment",
-                quantity=abs(quantity_change),
-                previous_stock=current_stock,
-                new_stock=new_quantity,
                 performed_by=performed_by,
                 reason=reason
             )
-            
-            return True, None
             
         except Exception as e:
             logger.error(f"Error adjusting stock for item {item_id}: {str(e)}")
@@ -1411,6 +1466,9 @@ class InventoryService:
                     ('status', '==', 'reserved')
                 ]
             )
+            logger.debug("create_inventory_reservation - query filters used: maintenance_task_id=%s, inventory_id=%s, status=reserved", maintenance_task_id, item_code)
+            logger.debug("create_inventory_reservation - found existing reservations: %s", existing_reservations)
+            logger.debug("Checking existing reservations for maintenance_task_id=%s inventory_id=%s status=reserved -> found=%s", maintenance_task_id, item_code, len(existing_reservations) if existing_success else -1)
             
             if existing_success and existing_reservations:
                 existing_id = existing_reservations[0].get('id') or existing_reservations[0].get('_doc_id')
@@ -1679,9 +1737,24 @@ class InventoryService:
         returned_by: str, 
         quantity: Optional[int] = None,
         date_returned: Optional[datetime] = None,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        item_condition: Optional[str] = None,
+        needs_replacement: bool = False
     ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
-        """Return items for a reservation back to inventory with full tracking"""
+        """Return items for a reservation back to inventory with conditional auto-receive based on item condition
+        
+        Args:
+            reservation_id: ID of the reservation to return
+            returned_by: User ID of person returning items
+            quantity: Quantity to return (defaults to reserved quantity)
+            date_returned: Date of return (defaults to now)
+            notes: Additional notes about the return
+            item_condition: 'good' or 'defective' - determines if item goes to Available or Needs Repair
+            needs_replacement: Whether user wants a replacement for defective item
+        
+        Returns:
+            Tuple of (success, return_data, error_message)
+        """
         try:
             # Get reservation data
             success, reservation_data, error = await self.db.get_document(COLLECTIONS['inventory_reservations'], reservation_id)
@@ -1714,21 +1787,167 @@ class InventoryService:
             staff_profile = await user_id_service.get_user_profile(returned_by)
             staff_name = f"{staff_profile.first_name} {staff_profile.last_name}" if staff_profile else "Unknown"
 
-            # Restock the inventory
-            restock_success, restock_err = await self.restock_item(
-                inventory_id, 
-                qty_to_return, 
-                returned_by, 
-                reason=f"Return from reservation {reservation_id}"
-            )
-            if not restock_success:
-                return False, None, f"Failed to restock item: {restock_err}"
+            # Determine item condition and handle accordingly
+            # Normalize condition to lowercase for comparison
+            condition = (item_condition or 'good').lower()
+            is_defective = condition in ['defective', 'broken', 'damaged', 'needs repair']
+            
+            # Resolve doc id for logging
+            try:
+                _, doc_item, _ = await self.get_inventory_item(inventory_id)
+                doc_id_log = doc_item.get('_doc_id') if doc_item else None
+            except Exception:
+                doc_id_log = None
+            
+            logger.info(f"Returning reservation {reservation_id}: inventory_id={inventory_id}, doc_id={doc_id_log}, qty={qty_to_return}, condition={condition}")
 
-            # Get updated stock after return
-            updated_success, updated_item, _ = await self.get_inventory_item(inventory_id)
-            new_stock = updated_item.get('current_stock', current_stock) if updated_success else current_stock
+            # CONDITIONAL AUTO-RECEIVE LOGIC:
+            # If Good: Add to available stock immediately
+            # If Defective: Mark item as needing repair (quarantine)
+            
+            if is_defective:
+                # DEFECTIVE/BROKEN: Quarantine the item (mark as needs repair)
+                logger.info(f"Item {inventory_id} returned as DEFECTIVE - setting to 'Needs Repair' status")
+                
+                # Update item status to indicate it needs repair
+                doc_id = item_data.get('_doc_id', inventory_id)
+                update_success, update_err = await self.db.update_document(
+                    COLLECTIONS['inventory'],
+                    doc_id,
+                    {
+                        'status': 'needs_repair',
+                        'is_active': False,  # Not available for use
+                        'condition_notes': notes or 'Item returned as defective/broken',
+                        'updated_at': datetime.utcnow()
+                    }
+                )
+                
+                if not update_success:
+                    logger.error(f"Failed to mark item as needing repair: {update_err}")
+                
+                # Create notification for repair team/admins
+                try:
+                    item_name = item_data.get('item_name', 'Unknown Item')
+                    item_code = item_data.get('item_code', inventory_id)
+                    from ..services.notification_manager import notification_manager, NotificationType, NotificationChannel, NotificationPriority
+                    
+                    # Get all admins to notify
+                    admin_users = await notification_manager._get_users_by_role('admin')
+                    for admin in admin_users:
+                        admin_id = admin.get('id') or admin.get('_doc_id')
+                        if admin_id:
+                            await notification_manager.create_notification(
+                                notification_type=NotificationType.INVENTORY_LOW_STOCK,  # Reusing for repair alerts
+                                recipient_id=admin_id,
+                                title="Item Needs Repair",
+                                message=f"{item_name} ({item_code}) was returned as defective/broken. Reason: {notes or 'No details provided'}",
+                                sender_id=returned_by,
+                                related_entity_type='inventory',
+                                related_entity_id=inventory_id,
+                                channels=[NotificationChannel.IN_APP, NotificationChannel.PUSH],
+                                priority=NotificationPriority.HIGH,
+                                requires_action=True,
+                                action_url=f"/admin/inventory/{inventory_id}",
+                                action_label="Review Item"
+                            )
+                except Exception as notif_err:
+                    logger.error(f"Failed to send repair notification: {notif_err}")
+                
+                # If replacement is requested, create a new reservation/request
+                if needs_replacement:
+                    try:
+                        logger.info(f"Creating replacement request for defective item {inventory_id}")
+                        # Create a high-priority request for replacement
+                        replacement_request = {
+                            'inventory_id': inventory_id,
+                            'quantity': qty_to_return,
+                            'purpose': f"Replacement for defective item (original reservation: {reservation_id})",
+                            'maintenance_task_id': reservation_data.get('maintenance_task_id'),
+                            'priority': 'high',
+                            'needed_by': None,
+                            'is_priority': True,
+                            'replacement_for': reservation_id,
+                            'requested_by': returned_by,
+                            'status': 'pending'
+                        }
+                        await self.create_inventory_request(replacement_request)
+                    except Exception as repl_err:
+                        logger.error(f"Failed to create replacement request: {repl_err}")
+                
+                new_stock = current_stock  # Stock unchanged (item quarantined, not added back)
+                
+            else:
+                # GOOD CONDITION: Restock immediately to available inventory
+                logger.info(f"Item {inventory_id} returned in GOOD condition - restocking to available")
+                
+                restock_success, restock_err = await self.restock_item(
+                    inventory_id, 
+                    qty_to_return, 
+                    returned_by, 
+                    reason=f"Return from reservation {reservation_id} - item in good condition"
+                )
+                if not restock_success:
+                    return False, None, f"Failed to restock item: {restock_err}"
+                
+                # Get updated stock after return
+                updated_success, updated_item, _ = await self.get_inventory_item(inventory_id)
+                new_stock = updated_item.get('current_stock', current_stock) if updated_success else current_stock
+                
+                # Notify admins about the successful return
+                try:
+                    item_name = item_data.get('item_name', 'Unknown Item')
+                    item_code = item_data.get('item_code', inventory_id)
+                    from ..services.notification_manager import notification_manager, NotificationType, NotificationChannel, NotificationPriority
+                    
+                    # Get all admins to notify
+                    admin_users = await notification_manager._get_users_by_role('admin')
+                    for admin in admin_users:
+                        admin_id = admin.get('id') or admin.get('_doc_id')
+                        if admin_id:
+                            await notification_manager.create_notification(
+                                notification_type=NotificationType.INVENTORY_RESTOCKED,
+                                recipient_id=admin_id,
+                                title="Item Returned - Good Condition",
+                                message=f"{staff_name} returned {qty_to_return} {unit} of {item_name} ({item_code}) in good condition. New stock: {new_stock}",
+                                sender_id=returned_by,
+                                related_entity_type='inventory',
+                                related_entity_id=inventory_id,
+                                channels=[NotificationChannel.IN_APP],
+                                priority=NotificationPriority.NORMAL,
+                                action_url=f"/admin/inventory/{inventory_id}",
+                                action_label="View Inventory"
+                            )
+                except Exception as notif_err:
+                    logger.error(f"Failed to send good return notification: {notif_err}")
+                
+                # Notify admins about the successful return
+                try:
+                    item_name = item_data.get('item_name', 'Unknown Item')
+                    item_code = item_data.get('item_code', inventory_id)
+                    from ..services.notification_manager import notification_manager, NotificationType, NotificationChannel, NotificationPriority
+                    
+                    # Get all admins to notify
+                    admin_users = await notification_manager._get_users_by_role('admin')
+                    for admin in admin_users:
+                        admin_id = admin.get('id') or admin.get('_doc_id')
+                        if admin_id:
+                            await notification_manager.create_notification(
+                                notification_type=NotificationType.INVENTORY_UPDATED,
+                                recipient_id=admin_id,
+                                title="Item Returned - Good Condition",
+                                message=f"{staff_name} returned {qty_to_return} {unit} of {item_name} ({item_code}) in good condition. New stock: {new_stock}",
+                                sender_id=returned_by,
+                                related_entity_type='inventory',
+                                related_entity_id=inventory_id,
+                                channels=[NotificationChannel.IN_APP],
+                                priority=NotificationPriority.NORMAL,
+                                action_url=f"/admin/inventory/{inventory_id}",
+                                action_label="View Inventory"
+                            )
+                except Exception as notif_err:
+                    logger.error(f"Failed to send good return notification: {notif_err}")
 
-            # Create InventoryReturn record
+            # Create InventoryReturn record with condition tracking
             return_record = {
                 'reservation_id': reservation_id,
                 'inventory_id': inventory_id,
@@ -1740,6 +1959,9 @@ class InventoryService:
                 'notes': notes,
                 'returned_by': returned_by,
                 'returned_by_name': staff_name,
+                'item_condition': condition,
+                'is_defective': is_defective,
+                'needs_replacement': needs_replacement,
                 'status': 'completed',
                 'created_at': datetime.utcnow(),
                 'updated_at': datetime.utcnow()
@@ -1755,29 +1977,19 @@ class InventoryService:
                 logger.error(f"Failed to create return record: {return_error}")
                 # Continue anyway since stock was already updated
 
-            # Update reserved_quantity on inventory item
-            try:
-                doc_id = item_data.get('_doc_id', inventory_id)
-                current_reserved = item_data.get('reserved_quantity', 0) or 0
-                new_reserved = max(0, current_reserved - qty_to_return)
-                await self.update_inventory_item(
-                    doc_id, 
-                    {'reserved_quantity': new_reserved, 'updated_at': datetime.utcnow()}, 
-                    returned_by
-                )
-            except Exception as e:
-                logger.debug(f'Failed to adjust reserved_quantity: {e}')
-
-            # Update reservation status
+            # DO NOT reduce reserved_quantity - keep the original reservation amount
+            # The returned items go back to general stock for future use/recurrence
+            
+            # Update reservation to track returned quantity
             already_returned = reservation_data.get('quantity_returned', 0)
             total_returned = already_returned + qty_to_return
             
-            new_status = 'returned' if total_returned >= reserved_qty else 'partially_returned'
+            # Keep status as 'received' even with partial returns
+            # The reservation quantity stays the same for recurrence purposes
             
             update_data = {
-                'status': new_status,
                 'quantity_returned': total_returned,
-                'returned_at': date_returned or datetime.utcnow(),
+                'last_return_date': date_returned or datetime.utcnow(),
                 'return_notes': notes,
                 'returned_by': returned_by,
                 'updated_at': datetime.utcnow()
@@ -1800,7 +2012,10 @@ class InventoryService:
                 'quantity_returned': qty_to_return,
                 'unit': unit,
                 'new_stock': new_stock,
-                'status': new_status,
+                'item_condition': condition,
+                'is_defective': is_defective,
+                'needs_replacement': needs_replacement,
+                'status': 'quarantined' if is_defective else 'available',
                 'date_returned': (date_returned or datetime.utcnow()).isoformat()
             }
             
@@ -2086,3 +2301,4 @@ class InventoryService:
 
 # Create global service instance
 inventory_service = InventoryService()
+

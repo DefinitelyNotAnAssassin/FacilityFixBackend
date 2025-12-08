@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from pydantic import BaseModel
 from ..auth.dependencies import get_current_user, require_role
 from ..services.inventory_service import inventory_service
 from ..services.notification_manager import notification_manager
@@ -505,9 +506,11 @@ async def release_reservation(
 async def mark_reservation_received(
     reservation_id: str = Path(..., description="Reservation ID"),
     current_user: Dict[str, Any] = Depends(get_current_user),
-    _: None = Depends(require_role(["admin", "staff"]))  # Admin or staff can mark as received
+    _: None = Depends(require_role(["admin"]))  # Only admin can manually mark as received
 ):
-    """Mark inventory reservation as received (staff has picked up the items)"""
+    """Mark inventory reservation as received (admin only). Staff should not manually mark reservations received.
+    Inventory reservations are automatically marked as received when a staff submits an assessment for the task.
+    """
     try:
         # Staff can only mark reservations created by admin as received
         if current_user.get('role') == 'staff':
@@ -637,10 +640,16 @@ async def return_reservation(
     quantity: Optional[int] = Query(None, description="Quantity to return; defaults to reservation quantity"),
     date_returned: Optional[datetime] = Query(None, description="Date when items were returned"),
     notes: Optional[str] = Query(None, description="Additional notes about the return"),
+    item_condition: Optional[str] = Query("good", description="Item condition: 'good' or 'defective'"),
+    needs_replacement: bool = Query(False, description="Whether a replacement is needed for defective items"),
     current_user: Dict[str, Any] = Depends(get_current_user),
     _: None = Depends(require_role(["admin", "staff"]))
 ):
-    """Return items from a reservation to stock with full tracking."""
+    """Return items from a reservation with conditional auto-receive based on item condition.
+    
+    - Good items: Immediately added to available stock
+    - Defective items: Quarantined (marked as needs_repair), notification sent to admins
+    """
     try:
         # Staff can only return reservations created by admin
         if current_user.get('role') == 'staff':
@@ -660,7 +669,9 @@ async def return_reservation(
             current_user["uid"], 
             quantity,
             date_returned,
-            notes
+            notes,
+            item_condition,
+            needs_replacement
         )
         if success:
             return {
@@ -687,6 +698,12 @@ class ReservationActionRequest(BaseModel):
     stock_status: Optional[str] = None
     type: str = "reservation"
     action: str  # "request" or "return"
+    # Return-specific fields
+    item_condition: Optional[str] = "good"  # "good" or "defective"
+    needs_replacement: bool = False
+    notes: Optional[str] = None
+    date_returned: Optional[datetime] = None
+    reservation_id: Optional[str] = None  # Can be provided directly
 
 @router.post("/reservations/action", response_model=Dict[str, Any])
 async def handle_reservation_action(
@@ -722,35 +739,48 @@ async def handle_reservation_action(
                 raise HTTPException(status_code=400, detail=error)
                 
         elif action_data.action == "return":
-            # Handle return action - need to find the reservation first
-            # Since we have maintenance_task_id, query for reservations
-            filters = {'maintenance_task_id': action_data.maintenance_task_id}
-            success, reservations, error = await inventory_service.get_inventory_reservations(filters)
+            # Handle return action - find the reservation
+            reservation_id = action_data.reservation_id
             
-            if not success or not reservations:
-                raise HTTPException(status_code=404, detail="No reservations found for this maintenance task")
+            if not reservation_id:
+                # If reservation_id not provided, try to find it from maintenance_task_id
+                filters = {'maintenance_task_id': action_data.maintenance_task_id}
+                success, reservations, error = await inventory_service.get_inventory_reservations(filters)
+                
+                if not success or not reservations:
+                    raise HTTPException(status_code=404, detail="No reservations found for this maintenance task")
+                
+                # Find the matching reservation
+                matching_reservation = None
+                for reservation in reservations:
+                    if reservation.get('inventory_id') == action_data.inventory_id:
+                        matching_reservation = reservation
+                        break
+                
+                if not matching_reservation:
+                    raise HTTPException(status_code=404, detail="Matching reservation not found")
+                
+                reservation_id = matching_reservation.get('_doc_id') or matching_reservation.get('id')
             
-            # Find the matching reservation
-            matching_reservation = None
-            for reservation in reservations:
-                if reservation.get('inventory_id') == action_data.inventory_id:
-                    matching_reservation = reservation
-                    break
+            if not reservation_id:
+                raise HTTPException(status_code=404, detail="Reservation ID could not be determined")
             
-            if not matching_reservation:
-                raise HTTPException(status_code=404, detail="Matching reservation not found")
-            
-            reservation_id = matching_reservation.get('id')
-            success, error = await inventory_service.return_reservation(
+            # Return with condition handling
+            success, return_data, error = await inventory_service.return_reservation(
                 reservation_id, 
                 current_user["uid"], 
-                action_data.quantity
+                action_data.quantity,
+                action_data.date_returned,
+                action_data.notes,
+                action_data.item_condition,
+                action_data.needs_replacement
             )
             
             if success:
                 return {
                     "success": True,
-                    "message": "Items returned to inventory successfully"
+                    "message": f"Items returned successfully. Status: {return_data.get('status', 'completed')}",
+                    "data": return_data
                 }
             else:
                 raise HTTPException(status_code=400, detail=error)
@@ -1014,39 +1044,40 @@ async def create_inventory_request(
     current_user: Dict[str, Any] = Depends(get_current_user),
     _: None = Depends(require_role(["staff", "admin"]))
 ):
-    """Create an inventory request (Staff and Admin only)"""
     try:
-        from ..services.user_id_service import user_id_service
-
-        # Set the requester
-        request_dict = request_data.dict(exclude_unset=True)
-        request_dict["requested_by"] = current_user["uid"]
-
-        # Get user profile to populate department
-        try:
-            user_profile = await user_id_service.get_user_profile(current_user["uid"])
-            if user_profile and user_profile.department:
-                request_dict["department"] = user_profile.department
-        except Exception as profile_error:
-            logger.warning(f"Could not fetch user profile for department: {str(profile_error)}")
-            # Continue without department if profile fetch fails
-
-        success, request_id, error = await inventory_service.create_inventory_request(request_dict)
-
-        if success:
+        # Create the request
+        success, doc_id, error = await inventory_service.create_inventory_request(
+            request_data.model_dump()
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=error)
+        
+        # Fetch the created request to return complete data including formatted_id
+        fetch_success, created_request, fetch_error = await inventory_service.get_inventory_request_by_id(doc_id)
+        
+        if not fetch_success:
+            # Fallback: return basic response if fetch fails
             return {
                 "success": True,
                 "message": "Inventory request created successfully",
-                "request_id": request_id
+                "data": {
+                    "id": doc_id,
+                    **request_data.model_dump()
+                }
             }
-        else:
-            raise HTTPException(status_code=400, detail=error)
-
+        
+        return {
+            "success": True,
+            "message": "Inventory request created successfully",
+            "data": created_request  # This includes formatted_id from database
+        }
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error creating inventory request: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Error in create_inventory_request endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/requests", response_model=Dict[str, Any])
 async def get_inventory_requests(
@@ -1094,6 +1125,8 @@ async def get_inventory_request_by_id(
         success, request_data, error = await inventory_service.get_inventory_request_by_id(request_id)
 
         if success and request_data:
+            # Debug logging
+            logger.info(f"Returning request {request_id} with formatted_id: {request_data.get('formatted_id')}")
             return {
                 "success": True,
                 "data": request_data
@@ -1240,9 +1273,9 @@ async def receive_inventory_request(
     request_id: str,
     deduct_stock: bool = Query(False, description="Whether to deduct stock immediately"),
     current_user: Dict[str, Any] = Depends(get_current_user),
-    _: None = Depends(require_role(["admin", "staff"]))
+    _: None = Depends(require_role(["admin"]))  # Only admin can manually mark a request as received
 ):
-    """Mark an inventory request as received (Staff and Admin only)"""
+    """Mark an inventory request as received (admin only). Staff's requests are auto-received during assessment submission."""
     try:
         # Staff can receive their own requests that have been approved by admin
         if current_user.get('role') == 'staff':

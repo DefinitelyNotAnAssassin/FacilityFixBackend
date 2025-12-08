@@ -185,6 +185,11 @@ async def health_check():
         "failed_routers": len(failed_routers)
     }
 
+@app.get("/ping")
+async def ping():
+    """Simple ping endpoint for connectivity testing"""
+    return {"status": "ok", "message": "pong"}
+
 # ---------- OPTIONAL ML/TRANSFORMERS ENDPOINTS ----------
 # ---------------- Health & quick translator ----------------
 @app.get("/healthz")

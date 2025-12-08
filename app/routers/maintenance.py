@@ -504,12 +504,9 @@ async def receive_task_inventory(
         user_id = current_user.get("uid")
         user_profile = await user_id_service.get_user_profile(user_id)
         is_admin = current_user.get("role") == "admin"
-        assigned_match = False
-        if assigned_to:
-            if assigned_to == user_id or assigned_to == f"{user_profile.first_name} {user_profile.last_name}":
-                assigned_match = True
-        if not (is_admin or assigned_match):
-            raise HTTPException(status_code=403, detail="Only assigned staff or admins can receive task inventory")
+        # Only admin can manually mark entire task inventory as received; staff must submit assessment to trigger auto-receive
+        if not is_admin:
+            raise HTTPException(status_code=403, detail="Only admins can manually mark task inventory as received")
 
         # Call inventory service to mark items received
         from app.services.inventory_service import inventory_service
@@ -1120,6 +1117,18 @@ async def submit_assessment(
         except Exception as notif_error:
             logger.error(f"[SUBMIT ASSESSMENT] Error in notification process: {str(notif_error)}", exc_info=True)
         
+        # Automatically mark all task reservations/requests as received when an assessment is submitted
+        try:
+            from app.services.inventory_service import inventory_service
+            # deduct stock by default when receiving as part of completing maintenance
+            mark_success, mark_err = await inventory_service.mark_task_inventory_received(task_id, user_uid, deduct_stock=True)
+            if not mark_success:
+                logger.warning(f"[SUBMIT ASSESSMENT] Inventory auto-receive failed for task {task_id}: {mark_err}")
+            else:
+                logger.info(f"[SUBMIT ASSESSMENT] Inventory auto-receive succeeded for task {task_id}")
+        except Exception as auto_err:
+            logger.error(f"[SUBMIT ASSESSMENT] Error auto-receiving inventory for task {task_id}: {auto_err}")
+
         return {
             "success": True,
             "message": "Assessment submitted successfully",
@@ -1270,6 +1279,37 @@ async def assign_staff_to_maintenance_task(
     except Exception as exc:  # pragma: no cover
         logger.error("Unexpected error assigning staff to task %s: %s", task_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to assign staff: {exc}")
+
+
+@router.post("/tasks/{task_id}/admin/finalize")
+async def finalize_maintenance_task(
+    task_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Admin-only: finalize a maintenance task, which consumes reserved inventory and creates the next recurrence."""
+    try:
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        admin_uid = current_user.get("uid")
+        result_task = await maintenance_task_service.finalize_task(task_id, admin_uid, deduct_stock=True)
+        if not result_task:
+            raise HTTPException(status_code=404, detail="Maintenance task not found")
+
+        return {
+            "success": True,
+            "message": "Maintenance task finalized successfully",
+            "task": await _serialize_task(result_task),
+        }
+
+    except ValueError as ve:
+        logger.error("Error finalizing task %s: %s", task_id, ve)
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error finalizing task %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to finalize task: {exc}")
 
 
 @router.post("/inventory_requests/{request_id}/received")

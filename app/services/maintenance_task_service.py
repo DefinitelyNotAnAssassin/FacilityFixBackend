@@ -1,7 +1,9 @@
 import logging
 import uuid
+import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from dateutil.relativedelta import relativedelta
 
 from app.database.collections import COLLECTIONS
 from app.database.database_service import DatabaseService, database_service
@@ -213,7 +215,10 @@ class MaintenanceTaskService:
             if not reserve_success:
                 logger.warning("Failed to create inventory reservation %s: %s", inv_id, reserve_err)
                 continue
+            else:
+                logger.debug("Created inventory reservation %s for task %s (inventory %s) -> %s", reservation_id, task_id, inv_id, reserve_success)
             created_reservation_ids.append(reservation_id)
+            print(f"[create_task] Created reservation {reservation_id} for task {task_id} and inventory {inv_id}")
             # Fetch created reservation doc to include details
             success, res_doc, err = await self.db.get_document(COLLECTIONS["inventory_reservations"], reservation_id)
             if success and res_doc:
@@ -317,7 +322,129 @@ class MaintenanceTaskService:
         if not success:
             raise ValueError(error or "Failed to update maintenance task")
 
+        # If the task status has become completed, consider generating a recurrence
+        if update_payload.get("status") == "completed":
+            try:
+                prev_task = await self.get_task(task_id)
+                if prev_task:
+                    await self._maybe_generate_recurrence(prev_task, update_payload.get("completed_at") or None)
+            except Exception as recurrence_error:
+                logger.error("Error handling recurrence generation after completing task %s: %s", task_id, recurrence_error)
+
         return await self.get_task(task_id)
+
+    async def _maybe_generate_recurrence(self, prev_task: MaintenanceTask, base_completed_at: Optional[datetime] = None) -> Optional[MaintenanceTask]:
+        """If prev_task has a recurrence_type, compute next occurrence and create next task with auto-reservation.
+
+        Returns the created task if any, otherwise None.
+        """
+        try:
+            recurrence_type = getattr(prev_task, "recurrence_type", None)
+            if not recurrence_type or recurrence_type.lower() in {"none", "", "n/a"}:
+                return None
+
+            base_date = base_completed_at or getattr(prev_task, "completed_at", None) or datetime.utcnow()
+
+            def _compute_next_due_date(base_date: datetime, recurrence: str) -> Optional[datetime]:
+                try:
+                    r = str(recurrence).lower().strip()
+                    # Named periods
+                    if any(k in r for k in ("weekly", "every week")):
+                        return base_date + relativedelta(weeks=+1)
+                    if any(k in r for k in ("monthly", "every month")):
+                        return base_date + relativedelta(months=+1)
+                    if any(k in r for k in ("quarterly", "every quarter", "every 3 months")):
+                        return base_date + relativedelta(months=+3)
+                    if any(k in r for k in ("yearly", "annually")):
+                        return base_date + relativedelta(years=+1)
+
+                    # numeric pattern 'every X ...'
+                    m = re.search(r"(\d+)\s*(day|week|month|year)s?", r)
+                    if m:
+                        amount = int(m.group(1))
+                        unit = m.group(2)
+                        if unit == "day":
+                            return base_date + relativedelta(days=+amount)
+                        if unit == "week":
+                            return base_date + relativedelta(weeks=+amount)
+                        if unit == "month":
+                            return base_date + relativedelta(months=+amount)
+                        if unit == "year":
+                            return base_date + relativedelta(years=+amount)
+                except Exception:
+                    pass
+                return None
+
+            next_due = _compute_next_due_date(base_date, recurrence_type)
+            if not next_due:
+                return None
+
+            # Build payload for next task
+            new_task_payload = {
+                "building_id": getattr(prev_task, "building_id", None) or prev_task.building_id,
+                "task_title": getattr(prev_task, "task_title", None) or getattr(prev_task, "task_description", "Maintenance Task"),
+                "task_description": getattr(prev_task, "task_description", None) or "",
+                "location": getattr(prev_task, "location", None) or "",
+                "scheduled_date": next_due.isoformat(),
+                "recurrence_type": recurrence_type,
+                "task_type_id": getattr(prev_task, "task_type_id", None) or None,
+                "created_by": "system",
+            }
+
+            # Repopulate parts_used from previous task reservations
+            try:
+                inv_res_ids = getattr(prev_task, "inventory_reservation_ids", []) or []
+                parts = []
+                for rid in inv_res_ids:
+                    s, rdoc, err = await self.db.get_document(COLLECTIONS["inventory_reservations"], rid)
+                    if s and rdoc:
+                        parts.append({
+                            "inventory_id": rdoc.get("inventory_id"),
+                            "quantity": rdoc.get("quantity", 1),
+                        })
+                if parts:
+                    new_task_payload["parts_used"] = parts
+            except Exception:
+                pass
+
+            new_task = await self.create_task("system", new_task_payload)
+
+            # Notify assigned staff if any
+            try:
+                from app.services.notification_manager import notification_manager
+                assigned_to = getattr(new_task, "assigned_to", None)
+                if assigned_to:
+                    await notification_manager.notify_maintenance_task_assigned(
+                        task_id=new_task.id,
+                        staff_id=assigned_to,
+                        task_title=new_task.task_title,
+                        location=new_task.location,
+                        scheduled_date=new_task.scheduled_date,
+                        assigned_by="system",
+                    )
+            except Exception:
+                logger.debug("Failed to send recurrence notification; continuing")
+
+            return new_task
+        except Exception as e:
+            logger.error("Error generating recurrence for task %s: %s", getattr(prev_task, 'id', 'unknown'), e)
+            return None
+
+    async def finalize_task(self, task_id: str, admin_uid: str, deduct_stock: bool = True) -> Optional[MaintenanceTask]:
+        """Finalize (admin-only) a maintenance task: mark inventory received/consumed, mark task completed, and generate recurrence."""
+        try:
+            mark_success, mark_err = await inventory_service.mark_task_inventory_received(task_id, admin_uid, deduct_stock=deduct_stock)
+            if not mark_success:
+                logger.warning("Failed to mark task inventory received for finalization: %s", mark_err)
+
+            # Update task to completed; this will trigger recurrence generation in update_task
+            update_payload = {"status": "completed", "completed_at": datetime.utcnow()}
+            await self.update_task(task_id, update_payload)
+
+            return await self.get_task(task_id)
+        except Exception as e:
+            logger.error("Failed to finalize task %s: %s", task_id, e)
+            raise
 
     async def mark_inventory_request_received(self, request_id: str, performed_by: str, condition: str = "ok", notes: Optional[str] = None) -> Dict[str, Any]:
         """Mark an inventory_request as received by tenant/staff.

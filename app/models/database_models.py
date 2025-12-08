@@ -89,21 +89,21 @@ class InventoryTransaction(BaseModel):
 
 class InventoryRequest(BaseModel):
     id: Optional[str] = None
+    formatted_id: Optional[str] = None
     inventory_id: str
     requested_by: str  # user_id
     approved_by: Optional[str] = None  # admin user_id
     quantity_requested: int
     quantity_approved: Optional[int] = None
-    purpose: str  # job_service, maintenance, emergency, etc.
+    staff_notes: str  # job_service, maintenance, emergency, etc.
     reference_id: Optional[str] = None  # job_service_id or maintenance_task_id
     priority: str = Field(default="")  # low, medium, high, urgent
     status: str = Field(default="pending")  # pending, approved, denied, received
     admin_notes: Optional[str] = None
     date_needed: Optional[datetime] = None  # When the item is needed by
-    notes: Optional[str] = None  # Additional notes from requester
     requested_date: Optional[datetime] = None
     approved_date: Optional[datetime] = None
-    fulfilled_date: Optional[datetime] = None # When items were received
+    consumed_date: Optional[datetime] = None # When items were received
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

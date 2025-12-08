@@ -28,7 +28,8 @@ class Settings:
     USE_GROQ: bool = os.getenv("USE_GROQ", "false").lower() == "true"
 
     # Auto-escalation settings
-    ENABLE_AUTO_ESCALATION: bool = os.getenv("ENABLE_AUTO_ESCALATION", "true").lower() == "true"
+    # TEMPORARILY DISABLED - Will re-enable at 11 PM (Dec 7, 2025)
+    ENABLE_AUTO_ESCALATION: bool = False  # os.getenv("ENABLE_AUTO_ESCALATION", "true").lower() == "true"
     ## PRODUCTION: Age in days
     #ESCALATION_TIME_UNIT: str = os.getenv("ESCALATION_TIME_UNIT", "days")
     #ESCALATE_LOW_TO_MED_DAYS: int = int(os.getenv("ESCALATE_LOW_TO_MED_DAYS", "3"))

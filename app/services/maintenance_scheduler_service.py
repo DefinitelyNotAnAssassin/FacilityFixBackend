@@ -4,6 +4,7 @@ import logging
 from dateutil.relativedelta import relativedelta
 from ..database.database_service import database_service
 from ..database.collections import COLLECTIONS
+from ..services.maintenance_task_service import maintenance_task_service
 from ..models.database_models import (
     MaintenanceSchedule, MaintenanceTask, EquipmentUsageLog, 
     MaintenanceTemplate, Equipment
@@ -154,15 +155,15 @@ class MaintenanceSchedulerService:
             existing_task = await self._check_existing_task(schedule.id, current_date)
             
             if not existing_task:
-                # Generate task
-                task_data = await self._create_task_from_schedule(schedule, current_date)
-                success, task_id, error = await self.db.create_document(COLLECTIONS['maintenance_tasks'], task_data)
-                
-                if success:
-                    tasks_generated += 1
-                    logger.debug(f"Generated task {task_id} for schedule {schedule.id}")
-                else:
-                    logger.error(f"Failed to create task for schedule {schedule.id}: {error}")
+                # Generate task payload then create via maintenance_task_service so inventory is auto-reserved
+                task_payload = await self._create_task_from_schedule(schedule, current_date)
+                try:
+                    new_task = await maintenance_task_service.create_task("system", task_payload)
+                    if new_task:
+                        tasks_generated += 1
+                        logger.debug(f"Generated task {new_task.id} for schedule {schedule.id}")
+                except Exception as e:
+                    logger.error(f"Failed to create task for schedule {schedule.id} via maintenance_task_service: {e}")
             
             # Calculate next occurrence
             current_date = self._calculate_next_occurrence(schedule, current_date)
@@ -204,6 +205,8 @@ class MaintenanceSchedulerService:
             'status': 'scheduled',
             'recurrence_type': schedule.recurrence_pattern or 'none',
             'required_parts': schedule.required_parts or template_data.get('required_parts', []),
+            # If required_parts contains inventory IDs, map them for create_task
+            'parts_used': ([{'inventory_id': pid, 'quantity': 1} for pid in (schedule.required_parts or template_data.get('required_parts', []))] if (schedule.required_parts or template_data.get('required_parts', [])) else []),
             'admin_notes': '',  # Admin notes for scheduled tasks
             'created_by': 'system',
             'created_at': datetime.now(),
@@ -412,9 +415,78 @@ class MaintenanceSchedulerService:
         """Calculate the next occurrence after current_date"""
         try:
             if schedule.recurrence_pattern == 'weekly':
+                # If specific weekdays are provided, find the next weekday occurrence
+                if getattr(schedule, 'specific_days', None):
+                    # Map weekday names to ints
+                    weekday_map = {
+                        'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+                        'friday': 4, 'saturday': 5, 'sunday': 6
+                    }
+                    target_days = []
+                    for d in schedule.specific_days:
+                        if isinstance(d, str) and d.strip().lower() in weekday_map:
+                            target_days.append(weekday_map[d.strip().lower()])
+                        elif isinstance(d, int) and 0 <= d <= 6:
+                            target_days.append(d)
+                    if target_days:
+                        # find next day from current_date
+                        for offset in range(1, 14):
+                            candidate = current_date + timedelta(days=offset)
+                            if candidate.weekday() in target_days:
+                                return candidate
+                # fallback to interval weeks
                 return current_date + timedelta(days=7 * (schedule.interval_value or 1))
             
             elif schedule.recurrence_pattern == 'monthly':
+                # If specific dates are provided (e.g., [1,15,28] or ['1-5']), compute next date in month
+                specific_dates = getattr(schedule, 'specific_dates', None)
+                if specific_dates:
+                    # normalize to a list of ints
+                    date_nums = []
+                    for d in specific_dates:
+                        if isinstance(d, int):
+                            date_nums.append(d)
+                        elif isinstance(d, str):
+                            if '-' in d:
+                                try:
+                                    start_s, end_s = d.split('-', 1)
+                                    start, end = int(start_s), int(end_s)
+                                    date_nums.extend(list(range(start, end + 1)))
+                                except Exception:
+                                    continue
+                            elif ',' in d:
+                                for part in d.split(','):
+                                    try:
+                                        date_nums.append(int(part.strip()))
+                                    except Exception:
+                                        continue
+                            else:
+                                try:
+                                    date_nums.append(int(d))
+                                except Exception:
+                                    continue
+                    # remove invalid and sort
+                    date_nums = sorted({x for x in date_nums if 1 <= x <= 31})
+                    if date_nums:
+                        # check same month remaining days first
+                        for day in date_nums:
+                            candidate = current_date.replace(day=1) + relativedelta(months=0)
+                            # candidate with day in current month
+                            try:
+                                candidate_day = current_date.replace(day=day)
+                            except Exception:
+                                # invalid day for this month (e.g., 31 in Feb) -> skip
+                                continue
+                            if candidate_day > current_date:
+                                return candidate_day
+                        # otherwise pick next month first allowed date
+                        next_month = current_date + relativedelta(months=1)
+                        for day in date_nums:
+                            last_day = (next_month + relativedelta(months=1) - timedelta(days=1)).day
+                            chosen_day = min(day, last_day)
+                            candidate_day = next_month.replace(day=chosen_day)
+                            return candidate_day
+                # default monthly increment
                 return current_date + relativedelta(months=schedule.interval_value or 1)
             
             elif schedule.recurrence_pattern == 'quarterly':
