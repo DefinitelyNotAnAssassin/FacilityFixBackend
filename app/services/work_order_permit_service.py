@@ -1,13 +1,13 @@
 from typing import List, Optional
 from datetime import datetime
-from app.models.database_models import WorkOrderPermit, UserProfile, ConcernSlip, Notification
-from app.database.database_service import DatabaseService
-from app.services.user_id_service import UserIdService
-from app.services.notification_manager import notification_manager
-from app.services.concern_slip_service import ConcernSlipService
-from app.models.notification_models import NotificationType
+from ..models.database_models import WorkOrderPermit, UserProfile, ConcernSlip, Notification
+from ..database.database_service import DatabaseService
+from ..services.user_id_service import UserIdService
+from ..services.notification_manager import notification_manager
+from ..services.concern_slip_service import ConcernSlipService
+from ..models.notification_models import NotificationType
 import uuid
-from app.services.work_order_permit_id_service import work_order_permit_id_service
+from ..services.work_order_permit_id_service import work_order_permit_id_service
 
 
 class WorkOrderPermitService:
@@ -230,7 +230,7 @@ class WorkOrderPermitService:
                     })
             
             # Notify admin and tenant of completion
-            from app.services.notification_manager import notification_manager
+            from ..services.notification_manager import notification_manager
             contractor_name = permit_data.get("contractor_name") or permit_data.get("title") or permit_data.get("description") or "Work Order"
             await notification_manager.notify_permit_completed(
                 permit_id=permit_id,
