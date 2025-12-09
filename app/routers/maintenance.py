@@ -708,63 +708,63 @@ async def create_maintenance_task(
         if task_dict.get("assigned_to"):
             try:
                 task_dict_for_notif = task.dict() if hasattr(task, 'dict') else task_dict
-                
+                # Always attempt to notify assigned staff regardless of maintenance_type
                 maintenance_type = task_dict_for_notif.get("maintenance_type", "internal") if isinstance(task_dict_for_notif, dict) else getattr(task, "maintenance_type", "internal")
                 print(f"\n[MAINTENANCE NOTIFY - POST] Maintenance type for task {task.id}: {maintenance_type}")
                 logger.info(f"[POST ENDPOINT] Maintenance type for task {task.id}: {maintenance_type}")
                 
-                if maintenance_type == "internal":
-                    if isinstance(task_dict_for_notif, dict):
-                        task_title = task_dict_for_notif.get("task_title", "Maintenance Task")
-                        location = task_dict_for_notif.get("location", "Unknown Location")
-                        scheduled = task_dict_for_notif.get("scheduled_date")
-                    else:
-                        task_title = getattr(task, "task_title", "Maintenance Task")
-                        location = getattr(task, "location", "Unknown Location")
-                        scheduled = getattr(task, "scheduled_date", None)
-                    
-                    staff_id_identifier = task_dict.get("assigned_to")
-                    print(f"[MAINTENANCE NOTIFY - POST] staff_id_identifier: {staff_id_identifier}")
-                    
-                    # Convert staff_id to Firebase UID
-                    user_profile = await user_id_service.get_staff_profile_from_staff_id(staff_id_identifier)
-                    if not user_profile:
-                        print(f"[MAINTENANCE NOTIFY - POST] ERROR: Could not find user profile for staff_id {staff_id_identifier}")
-                        logger.error(f"Could not find user profile for staff_id {staff_id_identifier}")
-                    else:
-                        firebase_uid = user_profile.id
-                        print(f"[MAINTENANCE NOTIFY - POST] Converted staff_id {staff_id_identifier} to Firebase UID {firebase_uid}")
-                        print(f"[MAINTENANCE NOTIFY - POST] Preparing to notify staff {firebase_uid}")
-                        print(f"[MAINTENANCE NOTIFY - POST] Task title: {task_title}")
-                        print(f"[MAINTENANCE NOTIFY - POST] Location: {location}")
-                        print(f"[MAINTENANCE NOTIFY - POST] Scheduled: {scheduled} (type: {type(scheduled).__name__})")
-                        
-                        logger.info(f"[POST ENDPOINT] Preparing to notify staff {firebase_uid} about newly created maintenance task")
-                        logger.info(f"  Task title: {task_title}")
-                        logger.info(f"  Location: {location}")
-                        logger.info(f"  Scheduled: {scheduled} (type: {type(scheduled).__name__})")
-                        
-                        from ..services.notification_manager import notification_manager
-                        print(f"[MAINTENANCE NOTIFY - POST] Calling notification_manager.notify_maintenance_task_assigned...")
-                        notification_result = await notification_manager.notify_maintenance_task_assigned(
-                            task_id=task.id,
-                            staff_id=firebase_uid,
-                            task_title=task_title,
-                            location=location,
-                            scheduled_date=scheduled,
-                            assigned_by=current_user.get("uid")
-                        )
-                        
-                        print(f"[MAINTENANCE NOTIFY - POST] Notification result: {notification_result}")
-                        if notification_result:
-                            print(f"[MAINTENANCE NOTIFY - POST] ✓ Successfully sent maintenance task notification to Firebase UID {firebase_uid}")
-                            logger.info(f"✓ Successfully sent maintenance task notification to Firebase UID {firebase_uid}")
-                        else:
-                            print(f"[MAINTENANCE NOTIFY - POST] ✗ Notification returned False for Firebase UID {firebase_uid}")
-                            logger.warning(f"✗ Notification returned False for Firebase UID {firebase_uid}")
+                if isinstance(task_dict_for_notif, dict):
+                    task_title = task_dict_for_notif.get("task_title", "Maintenance Task")
+                    location = task_dict_for_notif.get("location", "Unknown Location")
+                    scheduled = task_dict_for_notif.get("scheduled_date")
                 else:
-                    print(f"[MAINTENANCE NOTIFY - POST] Skipping notification - maintenance type is '{maintenance_type}', not 'internal'")
-                    logger.info(f"Skipping notification - maintenance type is '{maintenance_type}', not 'internal'")
+                    task_title = getattr(task, "task_title", "Maintenance Task")
+                    location = getattr(task, "location", "Unknown Location")
+                    scheduled = getattr(task, "scheduled_date", None)
+                
+                staff_id_identifier = task_dict.get("assigned_to")
+                print(f"[MAINTENANCE NOTIFY - POST] staff_id_identifier: {staff_id_identifier}")
+                
+                # Convert staff_id to Firebase UID, fallback to using provided identifier (it may already be a UID)
+                user_profile = await user_id_service.get_staff_profile_from_staff_id(staff_id_identifier)
+                if not user_profile:
+                    print(f"[MAINTENANCE NOTIFY - POST] WARNING: Could not find user profile for staff_id {staff_id_identifier}; proceeding using identifier as UID")
+                    logger.warning(f"Could not find user profile for staff_id {staff_id_identifier}; proceeding using identifier as UID")
+                    firebase_uid = staff_id_identifier
+                else:
+                    firebase_uid = user_profile.id
+                print(f"[MAINTENANCE NOTIFY - POST] Converted staff_id {staff_id_identifier} to Firebase UID {firebase_uid}")
+                print(f"[MAINTENANCE NOTIFY - POST] Preparing to notify staff {firebase_uid}")
+                print(f"[MAINTENANCE NOTIFY - POST] Task title: {task_title}")
+                print(f"[MAINTENANCE NOTIFY - POST] Location: {location}")
+                print(f"[MAINTENANCE NOTIFY - POST] Scheduled: {scheduled} (type: {type(scheduled).__name__})")
+                
+                logger.info(f"[POST ENDPOINT] Preparing to notify staff {firebase_uid} about newly created maintenance task")
+                logger.info(f"  Task title: {task_title}")
+                logger.info(f"  Location: {location}")
+                logger.info(f"  Scheduled: {scheduled} (type: {type(scheduled).__name__})")
+                
+                from ..services.notification_manager import notification_manager
+                print(f"[MAINTENANCE NOTIFY - POST] Calling notification_manager.notify_maintenance_task_assigned...")
+                notification_result = await notification_manager.notify_maintenance_task_assigned(
+                    task_id=task.id,
+                    staff_id=firebase_uid,
+                    task_title=task_title,
+                    location=location,
+                    scheduled_date=scheduled,
+                    assigned_by=current_user.get("uid")
+                )
+                
+                print(f"[MAINTENANCE NOTIFY - POST] Notification result: {notification_result}")
+                if notification_result:
+                    print(f"[MAINTENANCE NOTIFY - POST] ✓ Successfully sent maintenance task notification to Firebase UID {firebase_uid}")
+                    logger.info(f"✓ Successfully sent maintenance task notification to Firebase UID {firebase_uid}")
+                else:
+                    print(f"[MAINTENANCE NOTIFY - POST] ✗ Notification returned False for Firebase UID {firebase_uid}")
+                    logger.warning(f"✗ Notification returned False for Firebase UID {firebase_uid}")
+
+                # Admin notifications for assignment have been intentionally removed per configuration
+                logger.debug("Admin notifications for assignment skipped (configuration)")
                     
             except Exception as notif_error:
                 print(f"[MAINTENANCE NOTIFY - POST] ERROR: {str(notif_error)}")
@@ -839,67 +839,66 @@ async def update_maintenance_task(
         if not updated:
             raise HTTPException(status_code=404, detail="Maintenance task not found")
 
-        # Send notification if this is an internal maintenance task being assigned to staff
+        # Send notification when an assignee is set in update (always notify staff on assignment)
         if "assigned_to" in update_dict and update_dict["assigned_to"]:
             try:
                 task_dict = updated.dict() if hasattr(updated, 'dict') else updated
                 
+                # Always attempt to notify assigned user (fallback to provided identifier as UID)
                 maintenance_type = task_dict.get("maintenance_type", "internal") if isinstance(task_dict, dict) else getattr(updated, "maintenance_type", "internal")
                 print(f"\n[MAINTENANCE NOTIFY - PUT] Maintenance type for task {task_id}: {maintenance_type}")
                 logger.info(f"[PUT ENDPOINT] Maintenance type for task {task_id}: {maintenance_type}")
                 
-                if maintenance_type == "internal":
-                    if isinstance(task_dict, dict):
-                        task_title = task_dict.get("task_title", "Maintenance Task")
-                        location = task_dict.get("location", "Unknown Location")
-                        scheduled = task_dict.get("scheduled_date")
-                    else:
-                        task_title = getattr(updated, "task_title", "Maintenance Task")
-                        location = getattr(updated, "location", "Unknown Location")
-                        scheduled = getattr(updated, "scheduled_date", None)
-                    
-                    staff_id_identifier = update_dict["assigned_to"]
-                    print(f"[MAINTENANCE NOTIFY - PUT] staff_id_identifier: {staff_id_identifier}")
-                    
-                    # Convert staff_id to Firebase UID
-                    user_profile = await user_id_service.get_staff_profile_from_staff_id(staff_id_identifier)
-                    if not user_profile:
-                        print(f"[MAINTENANCE NOTIFY - PUT] ERROR: Could not find user profile for staff_id {staff_id_identifier}")
-                        logger.error(f"Could not find user profile for staff_id {staff_id_identifier}")
-                    else:
-                        firebase_uid = user_profile.id
-                        print(f"[MAINTENANCE NOTIFY - PUT] Converted staff_id {staff_id_identifier} to Firebase UID {firebase_uid}")
-                        print(f"[MAINTENANCE NOTIFY - PUT] Preparing to notify staff {firebase_uid}")
-                        print(f"[MAINTENANCE NOTIFY - PUT] Task title: {task_title}")
-                        print(f"[MAINTENANCE NOTIFY - PUT] Location: {location}")
-                        print(f"[MAINTENANCE NOTIFY - PUT] Scheduled: {scheduled} (type: {type(scheduled).__name__})")
-                        
-                        logger.info(f"[PUT ENDPOINT] Preparing to notify staff {firebase_uid} about maintenance task")
-                        logger.info(f"  Task title: {task_title}")
-                        logger.info(f"  Location: {location}")
-                        logger.info(f"  Scheduled: {scheduled} (type: {type(scheduled).__name__})")
-                        
-                        from ..services.notification_manager import notification_manager
-                        print(f"[MAINTENANCE NOTIFY - PUT] Calling notification_manager.notify_maintenance_task_assigned...")
-                        notification_result = await notification_manager.notify_maintenance_task_assigned(
-                            task_id=task_id,
-                            staff_id=firebase_uid,
-                            task_title=task_title,
-                            location=location,
-                            scheduled_date=scheduled,
-                            assigned_by=current_user.get("uid")
-                        )
-                        
-                        print(f"[MAINTENANCE NOTIFY - PUT] Notification result: {notification_result}")
-                        if notification_result:
-                            print(f"[MAINTENANCE NOTIFY - PUT] ✓ Successfully sent maintenance task notification to Firebase UID {firebase_uid}")
-                            logger.info(f"✓ Successfully sent maintenance task notification to Firebase UID {firebase_uid}")
-                        else:
-                            print(f"[MAINTENANCE NOTIFY - PUT] ✗ Notification returned False for Firebase UID {firebase_uid}")
-                            logger.warning(f"✗ Notification returned False for Firebase UID {firebase_uid}")
+                if isinstance(task_dict, dict):
+                    task_title = task_dict.get("task_title", "Maintenance Task")
+                    location = task_dict.get("location", "Unknown Location")
+                    scheduled = task_dict.get("scheduled_date")
                 else:
-                    print(f"[MAINTENANCE NOTIFY - PUT] Skipping notification - maintenance type is '{maintenance_type}', not 'internal'")
-                    logger.info(f"Skipping notification - maintenance type is '{maintenance_type}', not 'internal'")
+                    task_title = getattr(updated, "task_title", "Maintenance Task")
+                    location = getattr(updated, "location", "Unknown Location")
+                    scheduled = getattr(updated, "scheduled_date", None)
+                
+                staff_id_identifier = update_dict["assigned_to"]
+                print(f"[MAINTENANCE NOTIFY - PUT] staff_id_identifier: {staff_id_identifier}")
+                
+                # Convert staff_id to Firebase UID, fallback to using identifier directly
+                user_profile = await user_id_service.get_staff_profile_from_staff_id(staff_id_identifier)
+                if not user_profile:
+                    print(f"[MAINTENANCE NOTIFY - PUT] WARNING: Could not find user profile for staff_id {staff_id_identifier}; proceeding using identifier as UID")
+                    logger.warning(f"Could not find user profile for staff_id {staff_id_identifier}; proceeding using identifier as UID")
+                    firebase_uid = staff_id_identifier
+                else:
+                    firebase_uid = user_profile.id
+                print(f"[MAINTENANCE NOTIFY - PUT] Converted staff_id {staff_id_identifier} to Firebase UID {firebase_uid}")
+                print(f"[MAINTENANCE NOTIFY - PUT] Preparing to notify staff {firebase_uid}")
+                print(f"[MAINTENANCE NOTIFY - PUT] Task title: {task_title}")
+                print(f"[MAINTENANCE NOTIFY - PUT] Location: {location}")
+                print(f"[MAINTENANCE NOTIFY - PUT] Scheduled: {scheduled} (type: {type(scheduled).__name__})")
+                
+                logger.info(f"[PUT ENDPOINT] Preparing to notify staff {firebase_uid} about maintenance task")
+                logger.info(f"  Task title: {task_title}")
+                logger.info(f"  Location: {location}")
+                logger.info(f"  Scheduled: {scheduled} (type: {type(scheduled).__name__})")
+                        
+                from ..services.notification_manager import notification_manager
+                print(f"[MAINTENANCE NOTIFY - PUT] Calling notification_manager.notify_maintenance_task_assigned...")
+                notification_result = await notification_manager.notify_maintenance_task_assigned(
+                    task_id=task_id,
+                    staff_id=firebase_uid,
+                    task_title=task_title,
+                    location=location,
+                    scheduled_date=scheduled,
+                    assigned_by=current_user.get("uid")
+                )
+
+                print(f"[MAINTENANCE NOTIFY - PUT] Notification result: {notification_result}")
+                if notification_result:
+                    print(f"[MAINTENANCE NOTIFY - PUT] ✓ Successfully sent maintenance task notification to Firebase UID {firebase_uid}")
+                    logger.info(f"✓ Successfully sent maintenance task notification to Firebase UID {firebase_uid}")
+                else:
+                    print(f"[MAINTENANCE NOTIFY - PUT] ✗ Notification returned False for Firebase UID {firebase_uid}")
+                    logger.warning(f"✗ Notification returned False for Firebase UID {firebase_uid}")
+                # No maintenance_type gating; notifications should be sent regardless
                     
             except Exception as notif_error:
                 print(f"[MAINTENANCE NOTIFY - PUT] ERROR: {str(notif_error)}")
@@ -911,12 +910,13 @@ async def update_maintenance_task(
         # Check for either assessment_received field being set OR assessment content being provided
         has_assessment_received = "assessment_received" in update_dict and update_dict["assessment_received"]
         has_assessment_content = "assessment" in update_dict and update_dict["assessment"]
+        has_status_completed = "status" in update_dict and update_dict["status"] == "completed"
         
         logger.info(f"[PUT ENDPOINT] Assessment check - has_assessment_received={has_assessment_received}, has_assessment_content={has_assessment_content}")
         logger.info(f"[PUT ENDPOINT] assessment_received value: {update_dict.get('assessment_received', 'NOT_PRESENT')}")
         logger.info(f"[PUT ENDPOINT] assessment value: {update_dict.get('assessment', 'NOT_PRESENT')}")
         
-        if has_assessment_received or has_assessment_content:
+        if has_assessment_received or has_assessment_content or has_status_completed:
             try:
                 logger.info(f"[PUT ENDPOINT] Assessment submitted for task {task_id}")
                 task_title = getattr(updated, "task_title", "Maintenance Task")
@@ -941,8 +941,8 @@ async def update_maintenance_task(
                         success, notif_id, error = await notification_manager.create_notification(
                             notification_type=NotificationType.MAINTENANCE_COMPLETED,
                             recipient_id=admin_id,
-                            title="Maintenance Assessment Submitted",
-                            message=f"Assessment submitted for '{task_title}' at {location} by {staff_name}",
+                            title="Maintenance Task Completed",
+                            message=f"Maintenance task '{task_title}' at {location} has been completed by {staff_name}",
                             sender_id=current_user.get("uid"),
                             related_entity_type="maintenance_task",
                             related_entity_id=task_id,
@@ -1058,6 +1058,8 @@ async def submit_assessment(
             "assessment_date": datetime.utcnow(),
             "assessment": request.assessment,
             "assessment_notes": request.assessment_notes,
+            # Set status so task is marked ready for the next scheduled cycle
+            "status": "ready_for_next_cycle",
             "updated_at": datetime.utcnow(),
         }
         
@@ -1197,7 +1199,7 @@ async def assign_staff_to_maintenance_task(
         if not updated_task:
             raise HTTPException(status_code=404, detail="Maintenance task not found")
 
-        # Send notification to staff if this is an internal maintenance task
+        # Send notification to staff when assignment occurs (always notify staff)
         try:
             # Convert MaintenanceTask object to dict for easier access
             task_dict = updated_task.dict() if hasattr(updated_task, 'dict') else updated_task
@@ -1205,24 +1207,24 @@ async def assign_staff_to_maintenance_task(
             maintenance_type = task_dict.get("maintenance_type", "internal") if isinstance(task_dict, dict) else getattr(updated_task, "maintenance_type", "internal")
             print(f"\n[MAINTENANCE NOTIFY] Maintenance type for task {task_id}: {maintenance_type}")
             logger.info(f"Maintenance type for task {task_id}: {maintenance_type}")
-            
-            if maintenance_type == "internal":
-                if isinstance(task_dict, dict):
-                    task_title = task_dict.get("task_title", "Maintenance Task")
-                    location = task_dict.get("location", "Unknown Location")
-                    scheduled = task_dict.get("scheduled_date")
-                else:
-                    task_title = getattr(updated_task, "task_title", "Maintenance Task")
-                    location = getattr(updated_task, "location", "Unknown Location")
-                    scheduled = getattr(updated_task, "scheduled_date", None)
+            # Proceed to notify assigned staff regardless of maintenance_type
+            if isinstance(task_dict, dict):
+                task_title = task_dict.get("task_title", "Maintenance Task")
+                location = task_dict.get("location", "Unknown Location")
+                scheduled = task_dict.get("scheduled_date")
+            else:
+                task_title = getattr(updated_task, "task_title", "Maintenance Task")
+                location = getattr(updated_task, "location", "Unknown Location")
+                scheduled = getattr(updated_task, "scheduled_date", None)
                 
                 print(f"[MAINTENANCE NOTIFY] staff_id_identifier: {staff_id_identifier}")
                 
-                # Convert staff_id to Firebase UID
+                # Convert staff_id to Firebase UID, if mapping doesn't exist fall back to using the identifier directly
                 user_profile = await user_id_service.get_staff_profile_from_staff_id(staff_id_identifier)
                 if not user_profile:
-                    print(f"[MAINTENANCE NOTIFY] ERROR: Could not find user profile for staff_id {staff_id_identifier}")
-                    logger.error(f"Could not find user profile for staff_id {staff_id_identifier}")
+                    print(f"[MAINTENANCE NOTIFY] WARNING: Could not find user profile for staff_id {staff_id_identifier}; using identifier as UID")
+                    logger.warning(f"Could not find user profile for staff_id {staff_id_identifier}; using identifier as UID")
+                    firebase_uid = staff_id_identifier
                 else:
                     firebase_uid = user_profile.id
                     print(f"[MAINTENANCE NOTIFY] Converted staff_id {staff_id_identifier} to Firebase UID {firebase_uid}")
@@ -1254,9 +1256,9 @@ async def assign_staff_to_maintenance_task(
                     else:
                         print(f"[MAINTENANCE NOTIFY] ✗ Notification returned False for Firebase UID {firebase_uid}")
                         logger.warning(f"✗ Notification returned False for Firebase UID {firebase_uid}")
-            else:
-                print(f"[MAINTENANCE NOTIFY] Skipping notification - maintenance type is '{maintenance_type}', not 'internal'")
-                logger.info(f"Skipping notification - maintenance type is '{maintenance_type}', not 'internal'")
+                    
+                    # Admin notifications for assignment have been intentionally removed per configuration
+                    logger.debug("Admin notifications for assignment skipped (configuration)")
                 
         except Exception as notif_error:
             print(f"[MAINTENANCE NOTIFY] ERROR: {str(notif_error)}")

@@ -325,11 +325,22 @@ class MaintenanceTaskService:
         # If the task status has become completed, consider generating a recurrence
         if update_payload.get("status") == "completed":
             try:
+                print(f"\n[UPDATE_TASK] Task {task_id} marked as completed, checking for recurrence...")
                 prev_task = await self.get_task(task_id)
                 if prev_task:
-                    await self._maybe_generate_recurrence(prev_task, update_payload.get("completed_at") or None)
+                    print(f"[UPDATE_TASK] Calling _maybe_generate_recurrence for task {task_id}")
+                    recurring_task = await self._maybe_generate_recurrence(prev_task, update_payload.get("completed_at") or None)
+                    if recurring_task:
+                        print(f"[UPDATE_TASK] ✓ Recurring task created: {recurring_task.id}")
+                    else:
+                        print(f"[UPDATE_TASK] No recurring task was created")
+                else:
+                    print(f"[UPDATE_TASK] Could not retrieve task {task_id} for recurrence check")
             except Exception as recurrence_error:
-                logger.error("Error handling recurrence generation after completing task %s: %s", task_id, recurrence_error)
+                print(f"[UPDATE_TASK] ✗ Error in recurrence generation: {recurrence_error}")
+                logger.error("Error handling recurrence generation after completing task %s: %s", task_id, recurrence_error, exc_info=True)
+                import traceback
+                traceback.print_exc()
 
         return await self.get_task(task_id)
 
@@ -339,11 +350,19 @@ class MaintenanceTaskService:
         Returns the created task if any, otherwise None.
         """
         try:
+            print(f"\n[RECURRENCE] Starting recurrence check for task {getattr(prev_task, 'id', 'unknown')}")
+            logger.info(f"Starting recurrence check for task {getattr(prev_task, 'id', 'unknown')}")
+            
             recurrence_type = getattr(prev_task, "recurrence_type", None)
+            print(f"[RECURRENCE] Recurrence type: {recurrence_type}")
+            
             if not recurrence_type or recurrence_type.lower() in {"none", "", "n/a"}:
+                print(f"[RECURRENCE] No recurrence needed (type: {recurrence_type})")
+                logger.info(f"No recurrence needed for task (type: {recurrence_type})")
                 return None
 
             base_date = base_completed_at or getattr(prev_task, "completed_at", None) or datetime.utcnow()
+            print(f"[RECURRENCE] Base date for calculation: {base_date}")
 
             def _compute_next_due_date(base_date: datetime, recurrence: str) -> Optional[datetime]:
                 try:
@@ -377,7 +396,12 @@ class MaintenanceTaskService:
 
             next_due = _compute_next_due_date(base_date, recurrence_type)
             if not next_due:
+                print(f"[RECURRENCE] Could not compute next due date")
+                logger.warning(f"Could not compute next due date for recurrence type: {recurrence_type}")
                 return None
+
+            print(f"[RECURRENCE] Next due date: {next_due}")
+            logger.info(f"Computed next due date: {next_due}")
 
             # Build payload for next task
             new_task_payload = {
@@ -388,42 +412,145 @@ class MaintenanceTaskService:
                 "scheduled_date": next_due.isoformat(),
                 "recurrence_type": recurrence_type,
                 "task_type_id": getattr(prev_task, "task_type_id", None) or None,
+                "assigned_to": getattr(prev_task, "assigned_to", None) or None,  # Carry over assigned staff
+                "priority": getattr(prev_task, "priority", None) or "medium",  # Carry over priority
+                "category": getattr(prev_task, "category", None) or "",  # Carry over category
                 "created_by": "system",
             }
+            
+            # Carry over checklist items (reset completion status)
+            checklist_completed = getattr(prev_task, "checklist_completed", None)
+            if checklist_completed:
+                # Reset all checklist items to uncompleted for the new recurring task
+                new_checklist = []
+                for item in checklist_completed:
+                    if isinstance(item, dict):
+                        new_item = {**item, "completed": False}
+                        # Remove completion-related fields
+                        new_item.pop("completed_at", None)
+                        new_item.pop("completed_by", None)
+                        new_checklist.append(new_item)
+                if new_checklist:
+                    new_task_payload["checklist_completed"] = new_checklist
 
             # Repopulate parts_used from previous task reservations
             try:
                 inv_res_ids = getattr(prev_task, "inventory_reservation_ids", []) or []
+                print(f"[RECURRENCE] Previous task has {len(inv_res_ids)} inventory reservation IDs: {inv_res_ids}")
+                
                 parts = []
                 for rid in inv_res_ids:
+                    print(f"[RECURRENCE] Fetching reservation {rid}...")
                     s, rdoc, err = await self.db.get_document(COLLECTIONS["inventory_reservations"], rid)
                     if s and rdoc:
+                        inv_id = rdoc.get("inventory_id")
+                        qty = rdoc.get("quantity", 1)
+                        print(f"[RECURRENCE]   - Found: inventory_id={inv_id}, quantity={qty}")
                         parts.append({
-                            "inventory_id": rdoc.get("inventory_id"),
-                            "quantity": rdoc.get("quantity", 1),
+                            "inventory_id": inv_id,
+                            "quantity": qty,
                         })
+                    else:
+                        print(f"[RECURRENCE]   - Not found or error: {err}")
+                        
+                print(f"[RECURRENCE] Collected {len(parts)} parts for new task")
                 if parts:
                     new_task_payload["parts_used"] = parts
-            except Exception:
-                pass
+                    print(f"[RECURRENCE] Added parts_used to payload: {parts}")
+                else:
+                    print(f"[RECURRENCE] No parts to add to payload")
+            except Exception as inv_error:
+                print(f"[RECURRENCE] Error repopulating inventory: {inv_error}")
+                import traceback
+                traceback.print_exc()
+                logger.error(f"Error repopulating inventory for recurrence: {inv_error}", exc_info=True)
 
+            print(f"[RECURRENCE] Creating new recurring task with payload: assigned_to={new_task_payload.get('assigned_to')}, parts={len(new_task_payload.get('parts_used', []))}")
+            logger.info(f"Creating recurring task with {len(new_task_payload.get('parts_used', []))} inventory items")
+            
             new_task = await self.create_task("system", new_task_payload)
+            
+            print(f"[RECURRENCE] Created recurring task: {new_task.id}")
+            logger.info(f"Created recurring task {new_task.id} from completed task {getattr(prev_task, 'id', 'unknown')}")
+            logger.info(f"Recurring task has {len(getattr(new_task, 'inventory_reservation_ids', []))} inventory reservations")
 
-            # Notify assigned staff if any
+            # Notify assigned staff and admins about the recurring task
             try:
                 from app.services.notification_manager import notification_manager
+                from app.services.user_id_service import user_id_service
                 assigned_to = getattr(new_task, "assigned_to", None)
-                if assigned_to:
-                    await notification_manager.notify_maintenance_task_assigned(
-                        task_id=new_task.id,
-                        staff_id=assigned_to,
-                        task_title=new_task.task_title,
-                        location=new_task.location,
-                        scheduled_date=new_task.scheduled_date,
-                        assigned_by="system",
-                    )
-            except Exception:
-                logger.debug("Failed to send recurrence notification; continuing")
+                
+                # Notify assigned staff
+                if assigned_to and assigned_to != "unassigned":
+                    # Convert staff_id to Firebase UID if needed
+                    staff_firebase_uid = assigned_to
+                    try:
+                        # Check if assigned_to is a staff_id format (e.g., STAFF-xxx or S-xxx)
+                        if assigned_to.startswith("STAFF-") or assigned_to.startswith("S-"):
+                            user_profile = await user_id_service.get_staff_profile_from_staff_id(assigned_to)
+                            if user_profile:
+                                staff_firebase_uid = user_profile.id
+                                logger.info(f"Converted staff_id {assigned_to} to Firebase UID {staff_firebase_uid}")
+                            else:
+                                logger.warning(f"Could not find user profile for staff_id {assigned_to}")
+                        else:
+                            logger.info(f"Using assigned_to as Firebase UID: {assigned_to}")
+                    except Exception as convert_error:
+                        logger.error(f"Error converting staff_id {assigned_to}: {convert_error}", exc_info=True)
+                    
+                    try:
+                        await notification_manager.notify_maintenance_task_assigned(
+                            task_id=new_task.id,
+                            staff_id=staff_firebase_uid,
+                            task_title=new_task.task_title,
+                            location=new_task.location,
+                            scheduled_date=new_task.scheduled_date,
+                            assigned_by="system",
+                        )
+                        logger.info(f"✓ Notified staff {staff_firebase_uid} about recurring task {new_task.id}")
+                    except Exception as staff_notif_error:
+                        logger.error(f"Failed to notify staff {staff_firebase_uid}: {staff_notif_error}", exc_info=True)
+                else:
+                    logger.info(f"No staff assigned to notify for task {new_task.id}")
+                
+                # Notify all admins about the recurring task creation
+                try:
+                    admin_users = await notification_manager._get_users_by_role("admin")
+                    logger.info(f"Found {len(admin_users)} admin user(s) to notify")
+                    
+                    for admin in admin_users:
+                        admin_id = admin.get("id") or admin.get("_doc_id")
+                        if admin_id:
+                            try:
+                                from app.models.notification_models import NotificationChannel, NotificationPriority, NotificationType
+                                success, notif_id, error = await notification_manager.create_notification(
+                                    notification_type=NotificationType.MAINTENANCE_TASK_ASSIGNED,
+                                    recipient_id=admin_id,
+                                    title="Recurring Maintenance Task Created",
+                                    message=f"Recurring task '{new_task.task_title}' has been automatically created at {new_task.location}. Scheduled for {new_task.scheduled_date.strftime('%Y-%m-%d %H:%M') if new_task.scheduled_date else 'N/A'}.",
+                                    sender_id="system",
+                                    related_entity_type="maintenance_task",
+                                    related_entity_id=new_task.id,
+                                    channels=[NotificationChannel.IN_APP, NotificationChannel.EMAIL],
+                                    action_url=f"/admin/maintenance/{new_task.id}",
+                                    action_label="View Task",
+                                    priority=NotificationPriority.NORMAL
+                                )
+                                if success:
+                                    logger.info(f"✓ Notified admin {admin_id} (notification ID: {notif_id})")
+                                else:
+                                    logger.error(f"Failed to create notification for admin {admin_id}: {error}")
+                            except Exception as admin_notif_error:
+                                logger.error(f"Error notifying admin {admin_id}: {admin_notif_error}", exc_info=True)
+                        else:
+                            logger.warning(f"Admin user missing ID: {admin}")
+                    
+                    logger.info(f"✓ Notified {len(admin_users)} admin(s) about recurring task {new_task.id}")
+                except Exception as admin_error:
+                    logger.error(f"Failed to get or notify admins: {admin_error}", exc_info=True)
+                
+            except Exception as notif_error:
+                logger.error(f"Failed to send recurrence notifications: {str(notif_error)}", exc_info=True)
 
             return new_task
         except Exception as e:
