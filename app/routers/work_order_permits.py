@@ -2,9 +2,9 @@ from fastapi import APIRouter, HTTPException, Depends, File, UploadFile, status
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
-from app.services.work_order_permit_service import WorkOrderPermitService
-from app.models.database_models import WorkOrderPermit, BulkApproveRequest, BulkRejectRequest
-from app.auth.dependencies import get_current_user, require_role
+from ..services.work_order_permit_service import WorkOrderPermitService
+from ..models.database_models import WorkOrderPermit, BulkApproveRequest, BulkRejectRequest
+from ..auth.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/work-order-permits", tags=["work-order-permits"])
 
@@ -49,7 +49,7 @@ async def _create_work_order_permit_logic(
     current_user: dict
 ) -> dict:
     """Shared logic for creating work order permit requests"""
-    from app.database.database_service import DatabaseService
+    from ..database.database_service import DatabaseService
     import uuid
     
     db = DatabaseService()
@@ -117,7 +117,7 @@ async def _create_work_order_permit_logic(
             print(f"[Work Order Permit] Warning: Failed to update concern slip status: {update_error}")
     
     # Send notifications to admin and tenant
-    from app.services.notification_manager import notification_manager
+    from ..services.notification_manager import notification_manager
     try:
         await notification_manager.notify_permit_created(
             permit_id=work_order_id,
@@ -496,7 +496,7 @@ async def complete_work_order_request(
 ):
     """Mark a standalone work order permit as completed"""
     try:
-        from app.database.database_service import DatabaseService
+        from ..database.database_service import DatabaseService
         
         db = DatabaseService()
         
@@ -579,7 +579,7 @@ async def complete_work_order_request(
                 print(f"[Work Order Complete] Could not verify permit after update: {error}")
             
             # Send notification to admins about completion
-            from app.services.notification_manager import notification_manager
+            from ..services.notification_manager import notification_manager
             contractor_name = permit_data.get("contractor_name") or permit_data.get("title") or permit_data.get("description") or "Work Order"
             completion_notes = request.completion_notes if request else None
             await notification_manager.notify_permit_completed(
@@ -737,7 +737,7 @@ async def delete_work_order_permit(
     - Admins can delete any permit.
     """
     try:
-        from app.database.database_service import DatabaseService
+        from ..database.database_service import DatabaseService
 
         db = DatabaseService()
 

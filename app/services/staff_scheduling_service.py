@@ -220,6 +220,7 @@ class StaffSchedulingService:
             
             eligible_staff = []
             
+            # (No anchor day required here; use current weekday if needed elsewhere.)
             for staff in all_staff:
                 staff_id = staff.get('id') or staff.get('_doc_id')
                 
@@ -349,7 +350,7 @@ class StaffSchedulingService:
                 assignment_successful=False
             )
     
-    async def get_staff_schedule_overview(self, building_id: Optional[str] = None) -> dict:
+    async def get_staff_schedule_overview(self, building_id: Optional[str] = None, week_start: Optional[str] = None) -> dict:
         """Get overview of staff scheduling for admin dashboard"""
         try:
             # Get all active staff
@@ -366,10 +367,18 @@ class StaffSchedulingService:
             
             total_staff = len(all_staff)
             
-            # Get current week's availability
-            today = date.today()
-            week_start = today - timedelta(days=today.weekday())
-            week_start_str = week_start.strftime('%Y-%m-%d')
+            # Determine the week to use (defaults to current week)
+            if week_start:
+                try:
+                    parsed_week_start = datetime.strptime(week_start, '%Y-%m-%d').date()
+                    week_start_date = parsed_week_start
+                except Exception:
+                    today = date.today()
+                    week_start_date = today - timedelta(days=today.weekday())
+            else:
+                today = date.today()
+                week_start_date = today - timedelta(days=today.weekday())
+            week_start_str = week_start_date.strftime('%Y-%m-%d')
             
             availability_filters = [('week_start_date', '==', week_start_str)]
             success, availability_docs, error = await database_service.query_documents(
@@ -393,11 +402,21 @@ class StaffSchedulingService:
             staff_by_status = {}
             staff_by_department = {}
             
+            # Preload day-off requests for the anchor day to avoid per-staff queries
+            # Anchor date is derived from week_start_date + current weekday
+            anchor_weekday = date.today().weekday()
+            anchor_date = week_start_date + timedelta(days=anchor_weekday)
+            anchor_day_name = anchor_date.strftime('%A').lower()
+            anchor_date_str = anchor_date.strftime('%Y-%m-%d')
+            success, dayoff_docs_anchor, error = await database_service.query_documents(
+                COLLECTIONS['day_off_requests'], filters=[('request_date', '==', anchor_date_str)])
+
             for staff in all_staff:
                 staff_id = staff.get('id') or staff.get('_doc_id')
                 
-                # Check availability for today
-                today_name = today.strftime('%A').lower()
+                # Check availability anchored to the chosen week: day corresponding to today's weekday in that week
+                # e.g., Today is Wednesday; for Next Week we check Wednesday in Next Week
+                today_name = anchor_day_name
                 staff_availability = next(
                     (a for a in availability_docs if a.get('staff_id') == staff_id), 
                     None
@@ -407,7 +426,15 @@ class StaffSchedulingService:
                 if staff_availability:
                     is_available_today = staff_availability.get(today_name, True)
                 
-                if is_available_today:
+                # If staff has an active day-off request for the anchor date, treat them as unavailable
+                has_day_off = False
+                if dayoff_docs_anchor:
+                    for doc in dayoff_docs_anchor:
+                        if doc.get('staff_id') == staff_id and doc.get('status') and doc.get('status').lower() in ('approved', 'pending'):
+                            has_day_off = True
+                            break
+
+                if is_available_today and not has_day_off:
                     available_this_week += 1
                 else:
                     unavailable_count += 1
@@ -508,6 +535,72 @@ class StaffSchedulingService:
         except Exception as e:
             logger.error(f"Error checking duty schedule: {str(e)}")
             return True
+
+    async def apply_day_off_to_availability(self, staff_id: str, request_date_str: str, set_available: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Apply an approved day-off to staff weekly availability by marking that day as unavailable.
+
+        This will either update an existing staff_availability doc for the week containing the request_date
+        or create a new availability record for that week with the specific day set to False.
+        """
+        try:
+            # Parse incoming request date (expected 'YYYY-MM-DD')
+            request_date = datetime.strptime(request_date_str, '%Y-%m-%d').date()
+            week_start = request_date - timedelta(days=request_date.weekday())
+            week_start_str = week_start.strftime('%Y-%m-%d')
+
+            # Determine day name to modify
+            day_name = request_date.strftime('%A').lower()  # e.g., 'monday'
+            # Determine value to set: False for off, True for available
+            value_to_set = True if set_available else False
+
+            # Find existing availability for that staff and week
+            filters = [('staff_id', '==', staff_id), ('week_start_date', '==', week_start_str)]
+            success, docs, error = await database_service.query_documents(COLLECTIONS['staff_availability'], filters=filters, limit=1)
+
+            if not success:
+                logger.error(f"Failed to query staff_availability: {error}")
+                return False, None, str(error)
+
+            if docs:
+                # Update only the specific day to False
+                doc = docs[0]
+                doc_id = doc.get('_doc_id') or doc.get('id')
+                # Prepare updated fields, preserve existing days
+                update_doc = {
+                    day_name: value_to_set,
+                    'updated_at': datetime.utcnow(),
+                    'status': doc.get('status', 'submitted')
+                }
+
+                success, update_error = await database_service.update_document(COLLECTIONS['staff_availability'], doc_id, update_doc)
+                return success, doc_id, update_error
+            else:
+                # Create a new availability doc for the week where the requested day is False and others default
+                week_end_str = (week_start + timedelta(days=6)).strftime('%Y-%m-%d')
+                new_doc = {
+                    'staff_id': staff_id,
+                    'week_start_date': week_start_str,
+                    'week_end_date': week_end_str,
+                    'monday': True,
+                    'tuesday': True,
+                    'wednesday': True,
+                    'thursday': True,
+                    'friday': True,
+                    'saturday': False,
+                    'sunday': False,
+                    'status': 'submitted',
+                    'created_at': datetime.utcnow(),
+                    'updated_at': datetime.utcnow(),
+                }
+
+                # Set the specific day to false
+                new_doc[day_name] = value_to_set
+
+                success, new_doc_id, create_error = await database_service.create_document(COLLECTIONS['staff_availability'], new_doc)
+                return success, new_doc_id, create_error
+        except Exception as e:
+            logger.error(f"Error applying day-off to availability: {str(e)}")
+            return False, None, str(e)
     
     async def _get_staff_real_time_status(self, staff_id: str) -> dict:
         """Get real-time status of a staff member"""
