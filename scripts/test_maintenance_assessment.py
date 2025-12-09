@@ -1,12 +1,42 @@
+"""
+Test maintenance task assessment fields and inventory integration
+Tests:
+1. Assessment fields on task creation
+2. Assessment field updates
+3. Submit assessment auto-receives inventory
+4. Task completion creates recurrence with inventory reservation
+5. Return and replacement for reservation
+6. Scheduler creates task and auto-reserves inventory
+7. Admin finalize task flow
+"""
+import sys
+import os
 import asyncio
 from datetime import datetime
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from app.routers.maintenance import router as maintenance_router, submit_assessment, SubmitAssessmentRequest
+from app.routers.inventory import router as inventory_router
+from app.auth.dependencies import get_current_user as _real_get_current_user
 from app.services.maintenance_task_service import maintenance_task_service
 from app.services.inventory_service import inventory_service
-from app.routers.maintenance import submit_assessment, SubmitAssessmentRequest
 import app.services.maintenance_id_service as id_service_module
 
+# Setup test app
+app = FastAPI()
+app.include_router(maintenance_router)
+app.include_router(inventory_router)
 
+def fake_admin_user():
+    return {"uid": "test_admin_user", "role": "admin", "email": "admin@example.com", "first_name": "Test", "last_name": "Admin"}
+
+app.dependency_overrides[_real_get_current_user] = fake_admin_user
+client = TestClient(app)
+
+# FakeDB for testing
 class FakeDB:
     def __init__(self):
         self.storage = {}
@@ -423,6 +453,7 @@ async def test_scheduler_creates_task_and_auto_reserves_inventory():
             "building_id": "b10",
             "equipment_id": "eq1",
             "schedule_name": "Monthly Check",
+            "description": "Monthly equipment check with inventory",
             "recurrence_pattern": "monthly",
             "interval_value": 1,
             "is_active": True,
@@ -489,6 +520,7 @@ async def test_admin_finalize_task_flow_and_notifications():
             "building_id": "bF",
             "equipment_id": "eqF",
             "schedule_name": "Finalizer Schedule",
+            "description": "Finalize task schedule with inventory",
             "recurrence_pattern": "monthly",
             "interval_value": 1,
             "is_active": True,
@@ -541,17 +573,41 @@ async def test_admin_finalize_task_flow_and_notifications():
         print("✅ Admin finalize flow and notification test passed!")
 
 
-async def main():
+async def run_all_tests():
+    """Run all assessment and inventory integration tests"""
+    
+    print('\n' + '='*70)
+    print('MAINTENANCE TASK ASSESSMENT AND INVENTORY INTEGRATION TESTS')
+    print('='*70)
+    
+    print('\n[TEST 1] Assessment fields on task creation...')
     await test_maintenance_task_assessment_fields()
+    
+    print('\n[TEST 2] Assessment field updates...')
     await test_maintenance_task_update_assessment_fields()
+    
+    print('\n[TEST 3] Submit assessment auto-receives inventory...')
     await test_submit_assessment_auto_receives_inventory()
+    
+    print('\n[TEST 4] Receive inventory request (admin only)...')
     await test_receive_inventory_request_admin_only()
+    
+    print('\n[TEST 5] Task completion creates recurrence and reserves inventory...')
     await test_task_completion_creates_recurrence_and_reserves_inventory()
+    
+    print('\n[TEST 6] Return and replacement for reservation...')
     await test_return_and_replacement_for_reservation()
+    
+    print('\n[TEST 7] Scheduler creates task and auto-reserves inventory...')
     await test_scheduler_creates_task_and_auto_reserves_inventory()
+    
+    print('\n[TEST 8] Admin finalize task flow and notifications...')
     await test_admin_finalize_task_flow_and_notifications()
-    print("🎉 All assessment tests passed!")
+    
+    print('\n' + '='*70)
+    print('🎉 ALL ASSESSMENT AND INVENTORY TESTS PASSED!')
+    print('='*70)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_all_tests())
