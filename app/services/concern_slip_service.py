@@ -71,9 +71,22 @@ class ConcernSlipService:
                 concern_slip_id
             )
             
+            # Check if category and priority were already provided by frontend AI analysis
+            # If they were, use those instead of the backend AI result to maintain consistency
+            frontend_category = concern_data.get("category", "").strip()
+            frontend_priority = concern_data.get("priority", "").strip()
+            
+            # Use frontend values if provided, otherwise use backend AI results
+            final_category = frontend_category if frontend_category else ai_result.category
+            final_priority = frontend_priority if frontend_priority else ai_result.urgency
+            
+            logger.info(f"[AI PRIORITY FIX] Concern {concern_slip_id}: frontend_category='{frontend_category}', "
+                       f"frontend_priority='{frontend_priority}', backend_category='{ai_result.category}', "
+                       f"backend_urgency='{ai_result.urgency}', using category='{final_category}', priority='{final_priority}'")
+            
             ai_updates = {
-                "category": ai_result.category,
-                "priority": ai_result.urgency,
+                "category": final_category,
+                "priority": final_priority,
                 "ai_processed": True,
                 "processed_description": ai_result.processed_text,
                 "detected_language": ai_result.detected_language,
@@ -85,7 +98,7 @@ class ConcernSlipService:
             
             success, error = await self.db.update_document("concern_slips", concern_slip_id, ai_updates)
             if success:
-                logger.info(f"AI processing completed for concern {concern_slip_id}: {ai_result.category}/{ai_result.urgency}")
+                logger.info(f"AI processing completed for concern {concern_slip_id}: {final_category}/{final_priority}")
                 concern_slip_data.update(ai_updates)
             else:
                 logger.error(f"Failed to update concern slip with AI results: {error}")
